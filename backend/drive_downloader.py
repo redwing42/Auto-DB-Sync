@@ -1,13 +1,16 @@
 """Google Drive file downloader for RedWing DB Automation.
 
-Downloads files from shared Google Drive links without needing API credentials.
-Converts share URLs to direct download URLs and streams to disk.
+Downloads files from Google Drive using authenticated access via GNOME
+Online Accounts.  Falls back to unauthenticated public-link downloads
+when a token is unavailable.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +19,90 @@ import httpx
 from models import DownloadResult, SubmissionPayload
 
 logger = logging.getLogger(__name__)
+
+# ── GNOME OAuth Token ────────────────────────────────────────────────────────
+
+
+def get_gnome_oauth_token(account_path: str) -> Optional[str]:
+    """Get Google OAuth2 access token from GNOME Online Accounts via D-Bus.
+
+    Args:
+        account_path: D-Bus object path for the GNOME account,
+            e.g. "/org/gnome/OnlineAccounts/Accounts/account_1773050616_0"
+
+    Returns:
+        The access token string, or None if unavailable.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gdbus", "call", "--session",
+                "--dest", "org.gnome.OnlineAccounts",
+                "--object-path", account_path,
+                "--method", "org.gnome.OnlineAccounts.OAuth2Based.GetAccessToken",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            logger.warning("gdbus token fetch failed: %s", result.stderr.strip())
+            return None
+
+        # Output format: ('ya29.xxx...', 1519)
+        match = re.search(r"'([^']+)'", result.stdout)
+        if match:
+            token = match.group(1)
+            logger.debug("Obtained GNOME OAuth token (length=%d)", len(token))
+            return token
+
+        logger.warning("Could not parse gdbus output: %s", result.stdout.strip())
+        return None
+    except Exception as e:
+        logger.warning("Failed to get GNOME OAuth token: %s", e)
+        return None
+
+
+# ── Drive API Search ─────────────────────────────────────────────────────────
+
+
+async def search_drive_by_name(
+    filename: str, token: str
+) -> Optional[str]:
+    """Search Google Drive for a file by exact name.
+
+    Uses Drive API v3 with ``includeItemsFromAllDrives`` so it finds files
+    in Shared Drives and "Shared with me" as well.
+
+    Returns:
+        The file ID if found, else None.
+    """
+    url = "https://www.googleapis.com/drive/v3/files"
+    params = {
+        "q": f"name='{filename}' and trashed=false",
+        "fields": "files(id,name)",
+        "supportsAllDrives": "true",
+        "includeItemsFromAllDrives": "true",
+        "corpora": "allDrives",
+    }
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    files = data.get("files", [])
+    if files:
+        file_id = files[0]["id"]
+        logger.info("Drive API: found '%s' → id=%s", filename, file_id)
+        return file_id
+
+    logger.warning("Drive API: '%s' not found", filename)
+    return None
+
+
+# ── File ID Extraction ───────────────────────────────────────────────────────
 
 
 def extract_file_id(drive_link: str) -> Optional[str]:
@@ -38,8 +125,47 @@ def build_direct_download_url(file_id: str) -> str:
     return f"https://drive.google.com/uc?export=download&id={file_id}"
 
 
+# ── Authenticated Download ───────────────────────────────────────────────────
+
+
+async def download_file_authenticated(
+    file_id: str, dest_path: Path, token: str
+) -> Path:
+    """Download a file from Google Drive using Drive API v3 with auth.
+
+    This bypasses sharing restrictions — any file the GNOME account can
+    access will download successfully.
+
+    Args:
+        file_id: Google Drive file ID.
+        dest_path: Local file path to save to.
+        token: OAuth2 access token.
+
+    Returns:
+        The destination Path on success.
+    """
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+    params = {"alt": "media", "supportsAllDrives": "true"}
+    headers = {"Authorization": f"Bearer {token}"}
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+        async with client.stream("GET", url, params=params, headers=headers) as response:
+            response.raise_for_status()
+            with open(dest_path, "wb") as f:
+                async for chunk in response.aiter_bytes():
+                    f.write(chunk)
+
+    logger.info("Downloaded (authenticated) file_id=%s → %s", file_id, dest_path)
+    return dest_path
+
+
+# ── Unauthenticated Download (legacy fallback) ──────────────────────────────
+
+
 async def download_file(drive_link: str, dest_path: Path) -> Path:
-    """Download a file from Google Drive to the given destination path.
+    """Download a file from Google Drive via public share link (no auth).
 
     Args:
         drive_link: Google Drive share URL.
@@ -49,8 +175,7 @@ async def download_file(drive_link: str, dest_path: Path) -> Path:
         The destination Path on success.
 
     Raises:
-        ValueError: If the drive link is invalid.
-        httpx.HTTPStatusError: If the download fails.
+        ValueError: If the drive link is invalid or the file requires login.
     """
     file_id = extract_file_id(drive_link)
     if not file_id:
@@ -66,7 +191,6 @@ async def download_file(drive_link: str, dest_path: Path) -> Path:
 
         # Check if we got a confirmation page (large file warning)
         if b"confirm=" in response.content and b"download" in response.content:
-            # Extract confirm token
             confirm_match = re.search(
                 r"confirm=([a-zA-Z0-9_-]+)", response.text
             )
@@ -79,14 +203,19 @@ async def download_file(drive_link: str, dest_path: Path) -> Path:
             first_chunk = True
             async for chunk in response.aiter_bytes():
                 if first_chunk:
-                    # Check if the first chunk looks like HTML (Google login pages start with <!doctype html> or <html)
                     if chunk.startswith(b"<!doctype html") or chunk.startswith(b"<html"):
-                        raise ValueError("File is restricted or requires login. Ensure the link is shared as 'Anyone with the link'.")
+                        raise ValueError(
+                            "File is restricted or requires login. "
+                            "Ensure the link is shared as 'Anyone with the link'."
+                        )
                     first_chunk = False
                 f.write(chunk)
 
-    logger.info(f"Downloaded {drive_link} → {dest_path}")
+    logger.info("Downloaded %s → %s", drive_link, dest_path)
     return dest_path
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def get_mission_stem(mission_filename: str) -> str:
@@ -94,15 +223,24 @@ def get_mission_stem(mission_filename: str) -> str:
     return Path(mission_filename).stem
 
 
+# ── Main Download Orchestrator ───────────────────────────────────────────────
+
+
 async def download_submission_files(
     payload: SubmissionPayload,
     repo_path: Path,
+    goa_account_path: str = "/org/gnome/OnlineAccounts/Accounts/account_1773050616_0",
 ) -> DownloadResult:
     """Download all files for a submission (waypoints + images).
+
+    Strategy:
+      1. Try authenticated download via GNOME OAuth + Drive API (search by name).
+      2. If that fails, fall back to unauthenticated public-link download.
 
     Args:
         payload: The submission payload with Drive links.
         repo_path: Path to the RedWing repo.
+        goa_account_path: D-Bus path for GNOME Online Account.
 
     Returns:
         DownloadResult with file paths or error.
@@ -115,24 +253,76 @@ async def download_submission_files(
     elevation_path = images_dir / f"{stem} elevation graph.png"
     route_path = images_dir / f"{stem} flight route.png"
 
-    try:
-        # Download mission file
-        await download_file(payload.mission_drive_link, mission_path)
+    # ── Step 1: Get OAuth token ──────────────────────────────────────────
+    token = get_gnome_oauth_token(goa_account_path)
 
-        # Download elevation graph image (if link is provided)
-        if (payload.elevation_image_drive_link):
-            await download_file(payload.elevation_image_drive_link, elevation_path)
+    # ── Step 2: Download mission file (required — fatal on failure) ──────
+    mission_downloaded = False
 
-        # Download flight route image (if link is provided)
-        if (payload.route_image_drive_link):
-            await download_file(payload.route_image_drive_link, route_path)
+    if token:
+        try:
+            # Try searching by filename first
+            file_id = await search_drive_by_name(payload.mission_filename, token)
+            if file_id:
+                await download_file_authenticated(file_id, mission_path, token)
+                mission_downloaded = True
+            else:
+                # File not found by name — try extracting ID from the link
+                file_id = extract_file_id(payload.mission_drive_link)
+                if file_id:
+                    logger.info("File not found by name, trying link ID: %s", file_id)
+                    await download_file_authenticated(file_id, mission_path, token)
+                    mission_downloaded = True
+        except Exception as e:
+            logger.warning("Authenticated download failed, trying unauthenticated: %s", e)
 
-        return DownloadResult(
-            success=True,
-            mission_file_path=str(mission_path),
-            elevation_image_path=str(elevation_path),
-            route_image_path=str(route_path),
-        )
-    except Exception as e:
-        logger.exception("File download failed")
-        return DownloadResult(success=False, error=str(e))
+    if not mission_downloaded:
+        try:
+            await download_file(payload.mission_drive_link, mission_path)
+            mission_downloaded = True
+        except Exception as e:
+            logger.exception("Mission file download failed (all methods)")
+            return DownloadResult(success=False, error=str(e))
+
+    # ── Step 3: Download images (optional — non-fatal) ───────────────────
+    elevation_result = ""
+    route_result = ""
+
+    if payload.elevation_image_drive_link:
+        try:
+            if token:
+                file_id = extract_file_id(payload.elevation_image_drive_link)
+                if file_id:
+                    await download_file_authenticated(file_id, elevation_path, token)
+                    elevation_result = str(elevation_path)
+                else:
+                    await download_file(payload.elevation_image_drive_link, elevation_path)
+                    elevation_result = str(elevation_path)
+            else:
+                await download_file(payload.elevation_image_drive_link, elevation_path)
+                elevation_result = str(elevation_path)
+        except Exception as e:
+            logger.warning("Elevation image download failed (non-fatal): %s", e)
+
+    if payload.route_image_drive_link:
+        try:
+            if token:
+                file_id = extract_file_id(payload.route_image_drive_link)
+                if file_id:
+                    await download_file_authenticated(file_id, route_path, token)
+                    route_result = str(route_path)
+                else:
+                    await download_file(payload.route_image_drive_link, route_path)
+                    route_result = str(route_path)
+            else:
+                await download_file(payload.route_image_drive_link, route_path)
+                route_result = str(route_path)
+        except Exception as e:
+            logger.warning("Flight route image download failed (non-fatal): %s", e)
+
+    return DownloadResult(
+        success=True,
+        mission_file_path=str(mission_path),
+        elevation_image_path=elevation_result,
+        route_image_path=route_result,
+    )

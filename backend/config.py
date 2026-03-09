@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     GIT_BRANCH: str = "main"
     SUBMISSIONS_DB_PATH: str = "./submissions.db"
 
+    # ── GNOME Online Accounts (for authenticated Google Drive access) ────
+    GNOME_GOA_ACCOUNT_PATH: str = "/org/gnome/OnlineAccounts/Accounts/account_1773050616_0"
+
     # ── Auth ─────────────────────────────────────────────────────────────
     WEBHOOK_SECRET: str = "changeme"
 

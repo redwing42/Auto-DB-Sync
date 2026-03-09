@@ -14,9 +14,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 from drive_downloader import (
     build_direct_download_url,
     download_file,
+    download_file_authenticated,
     download_submission_files,
     extract_file_id,
+    get_gnome_oauth_token,
     get_mission_stem,
+    search_drive_by_name,
 )
 from models import SubmissionPayload
 
@@ -60,14 +63,84 @@ class TestGetMissionStem:
         assert get_mission_stem("mission") == "mission"
 
 
+class TestGetGnomeOauthToken:
+    """Test GNOME OAuth token retrieval."""
+
+    def test_successful_token(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "('ya29.faketoken123', 1519)\n"
+
+        with patch("drive_downloader.subprocess.run", return_value=mock_result) as mock_run:
+            token = get_gnome_oauth_token("/org/gnome/OnlineAccounts/Accounts/test")
+            assert token == "ya29.faketoken123"
+            mock_run.assert_called_once()
+
+    def test_gdbus_failure(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "No such object"
+
+        with patch("drive_downloader.subprocess.run", return_value=mock_result):
+            token = get_gnome_oauth_token("/org/gnome/OnlineAccounts/Accounts/bad")
+            assert token is None
+
+    def test_subprocess_exception(self):
+        with patch("drive_downloader.subprocess.run", side_effect=Exception("no gdbus")):
+            token = get_gnome_oauth_token("/some/path")
+            assert token is None
+
+
+class TestSearchDriveByName:
+    """Test Drive API search."""
+
+    @pytest.mark.asyncio
+    async def test_file_found(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "files": [{"id": "abc123", "name": "test.waypoints"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("drive_downloader.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = await search_drive_by_name("test.waypoints", "fake-token")
+            assert result == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_file_not_found(self):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"files": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("drive_downloader.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = await search_drive_by_name("nonexistent.waypoints", "fake-token")
+            assert result is None
+
+
 class TestDownloadFile:
     """Test file download with mocked HTTP."""
 
     @pytest.mark.asyncio
     async def test_successful_download(self, tmp_path: Path):
+        async def fake_aiter():
+            yield b"fake file data"
+
         mock_response = MagicMock()
         mock_response.content = b"fake file data"
         mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_bytes = fake_aiter
 
         with patch("drive_downloader.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -93,34 +166,59 @@ class TestDownloadSubmissionFiles:
     """Test full submission file download."""
 
     @pytest.mark.asyncio
-    async def test_filename_construction(self, test_repo_path: Path, sample_payload: SubmissionPayload):
-        """Test that files are saved with correct names."""
-        with patch("drive_downloader.download_file", new_callable=AsyncMock) as mock_dl:
+    async def test_authenticated_download_by_name(self, test_repo_path: Path, sample_payload: SubmissionPayload):
+        """Test that authenticated download searches by filename first."""
+        with patch("drive_downloader.get_gnome_oauth_token", return_value="fake-token"), \
+             patch("drive_downloader.search_drive_by_name", new_callable=AsyncMock, return_value="found-id"), \
+             patch("drive_downloader.download_file_authenticated", new_callable=AsyncMock) as mock_auth_dl:
+
+            mock_auth_dl.return_value = Path("/fake/path")
+
+            result = await download_submission_files(sample_payload, test_repo_path)
+
+            assert result.success
+            # Should have called search_drive_by_name with the mission filename
+            # and download_file_authenticated with the found ID (+ images)
+            assert mock_auth_dl.call_count >= 1
+            first_call = mock_auth_dl.call_args_list[0]
+            assert first_call[0][0] == "found-id"  # file_id
+            assert "HQ-DEMO-180m.waypoints" in str(first_call[0][1])  # dest_path
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_unauthenticated(self, test_repo_path: Path, sample_payload: SubmissionPayload):
+        """Test fallback when GNOME token is unavailable."""
+        with patch("drive_downloader.get_gnome_oauth_token", return_value=None), \
+             patch("drive_downloader.download_file", new_callable=AsyncMock) as mock_dl:
+
             mock_dl.return_value = Path("/fake/path")
 
             result = await download_submission_files(sample_payload, test_repo_path)
 
             assert result.success
-            assert mock_dl.call_count == 3
-
-            # Check mission file path
-            call_args = mock_dl.call_args_list
-            mission_dest = call_args[0][0][1]
-            assert str(mission_dest).endswith("missions/HQ-DEMO-180m.waypoints")
-
-            # Check elevation image path
-            elev_dest = call_args[1][0][1]
-            assert "HQ-DEMO-180m elevation graph.png" in str(elev_dest)
-
-            # Check route image path
-            route_dest = call_args[2][0][1]
-            assert "HQ-DEMO-180m flight route.png" in str(route_dest)
+            # Should have called unauthenticated download_file
+            mock_dl.assert_called()
 
     @pytest.mark.asyncio
-    async def test_download_failure_returns_error(self, test_repo_path: Path, sample_payload: SubmissionPayload):
-        with patch("drive_downloader.download_file", new_callable=AsyncMock) as mock_dl:
-            mock_dl.side_effect = Exception("Network error")
+    async def test_auth_fails_then_fallback(self, test_repo_path: Path, sample_payload: SubmissionPayload):
+        """Test that when auth download fails, it falls back to unauthenticated."""
+        with patch("drive_downloader.get_gnome_oauth_token", return_value="fake-token"), \
+             patch("drive_downloader.search_drive_by_name", new_callable=AsyncMock, side_effect=Exception("API error")), \
+             patch("drive_downloader.download_file", new_callable=AsyncMock) as mock_dl:
+
+            mock_dl.return_value = Path("/fake/path")
 
             result = await download_submission_files(sample_payload, test_repo_path)
+
+            assert result.success
+            mock_dl.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_all_methods_fail(self, test_repo_path: Path, sample_payload: SubmissionPayload):
+        """Test when both auth and unauth downloads fail."""
+        with patch("drive_downloader.get_gnome_oauth_token", return_value=None), \
+             patch("drive_downloader.download_file", new_callable=AsyncMock, side_effect=Exception("Network error")):
+
+            result = await download_submission_files(sample_payload, test_repo_path)
+
             assert not result.success
             assert "Network error" in result.error

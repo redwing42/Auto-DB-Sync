@@ -116,13 +116,20 @@ class SubmissionStore:
         submission_id: str,
         download_status: DownloadStatus,
         downloaded_files: Optional[dict] = None,
+        error_detail: Optional[str] = None,
     ) -> bool:
         conn = self._get_conn()
         files_json = json.dumps(downloaded_files) if downloaded_files else None
-        conn.execute(
-            "UPDATE submissions SET download_status = ?, downloaded_files = ? WHERE id = ?",
-            (download_status.value, files_json, submission_id),
-        )
+        if error_detail:
+            conn.execute(
+                "UPDATE submissions SET download_status = ?, downloaded_files = ?, error_detail = ? WHERE id = ?",
+                (download_status.value, files_json, error_detail, submission_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE submissions SET download_status = ?, downloaded_files = ? WHERE id = ?",
+                (download_status.value, files_json, submission_id),
+            )
         conn.commit()
         conn.close()
         return True
