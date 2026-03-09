@@ -215,6 +215,7 @@ def run_approval_pipeline(
         git_output = "\n".join(git_output_parts)
         logger.info(f"[Pipeline {submission_id}] Git commit & push complete")
         """
+        git_output = "Skipped per user request"
         logger.info(f"[Pipeline {submission_id}] Git process skipped")
 
         # ── Success ─────────────────────────────────────────────────────
