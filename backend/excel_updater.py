@@ -147,20 +147,31 @@ class ExcelUpdater:
     def resolve_network(
         self, network_name: str, dry_run: bool = False
     ) -> Tuple[EntityPreview, Optional[int]]:
-        """Look up network by name.
-
-        Returns (preview, network_id). network_id is None if not found.
-        """
+        """Look up network by name (supports fuzzy/partial matching)."""
         ws = self._ws(SHEET_NETWORKS)
         headers = self._headers(SHEET_NETWORKS)
         name_col = headers.get("name", 2)
         id_col = headers.get("id", 1)
 
-        row = _find_row_by_column_value(ws, name_col, network_name)
-        if row is not None:
-            nid = int(ws.cell(row=row, column=id_col).value)
+        # Robust match: check for exact match first, then partial match
+        true_max = _get_true_max_row(ws)
+        search_name = network_name.strip().lower()
+        
+        found_row = None
+        for r in range(2, true_max + 1):
+            cell_val = str(ws.cell(row=r, column=name_col).value).strip().lower()
+            if cell_val == search_name:
+                found_row = r
+                break
+            if cell_val in search_name or search_name in cell_val:
+                found_row = r
+                # Don't break yet, exact match might come later
+        
+        if found_row is not None:
+            nid = int(ws.cell(row=found_row, column=id_col).value)
+            actual_name = str(ws.cell(row=found_row, column=name_col).value)
             return (
-                EntityPreview(id=nid, name=network_name, action=EntityAction.EXISTING),
+                EntityPreview(id=nid, name=actual_name, action=EntityAction.EXISTING),
                 nid,
             )
         else:
@@ -599,78 +610,81 @@ class ExcelUpdater:
     def is_duplicate_submission(self, payload: SubmissionPayload) -> bool:
         """Check if an identical flight route already exists in the Excel.
         
-        Everything must match: network, both locations, both LZs, 
-        waypoint filename, and directions.
+        Robust version: Match by Network, then search all routes for matching 
+        Waypoint Filename + Directions + Coordinate Proximity.
         """
-        # 1. Resolve network
-        ws_net = self._ws(SHEET_NETWORKS)
-        h_net = self._headers(SHEET_NETWORKS)
-        net_row = _find_row_by_column_value(ws_net, h_net.get("name", 2), payload.network_name)
-        if net_row is None:
-            return False
-        net_id = int(ws_net.cell(row=net_row, column=h_net.get("id", 1)).value)
-
-        # 2. Resolve locations
-        ws_loc = self._ws(SHEET_LOCATIONS)
-        h_loc = self._headers(SHEET_LOCATIONS)
-        src_loc_row = _find_row_by_column_value(ws_loc, h_loc.get("name", 2), payload.source_location_name)
-        dst_loc_row = _find_row_by_column_value(ws_loc, h_loc.get("name", 2), payload.destination_location_name)
-        if src_loc_row is None or dst_loc_row is None:
-            return False
-        src_loc_id = int(ws_loc.cell(row=src_loc_row, column=h_loc.get("id", 1)).value)
-        dst_loc_id = int(ws_loc.cell(row=dst_loc_row, column=h_loc.get("id", 1)).value)
-
-        # 3. Resolve Landing Zones (including lat/long check)
-        ws_lz = self._ws(SHEET_LANDING_ZONES)
-        h_lz = self._headers(SHEET_LANDING_ZONES)
-        
-        def find_lz_id(name, loc_id, lat, lon):
-            # We don't use _find_row_by_column_value directly because we need loc_id and coordinates match
-            true_max = _get_true_max_row(ws_lz)
-            for r in range(2, true_max + 1):
-                if (str(ws_lz.cell(row=r, column=h_lz["name"]).value).strip() == name.strip() and
-                    int(ws_lz.cell(row=r, column=h_lz["location_id"]).value) == loc_id):
-                    # Check coords
-                    try:
-                        ex_lat = float(ws_lz.cell(row=r, column=h_lz["latitude"]).value)
-                        ex_lon = float(ws_lz.cell(row=r, column=h_lz["longitude"]).value)
-                        if abs(ex_lat - lat) < 0.0001 and abs(ex_lon - lon) < 0.0001:
-                            return int(ws_lz.cell(row=r, column=h_lz["id"]).value)
-                    except (TypeError, ValueError):
-                        continue
-            return None
-
-        src_lz_id = find_lz_id(payload.source_takeoff_zone_name, src_loc_id, payload.source_latitude, payload.source_longitude)
-        dst_lz_id = find_lz_id(payload.destination_landing_zone_name, dst_loc_id, payload.destination_latitude, payload.destination_longitude)
-        if src_lz_id is None or dst_lz_id is None:
+        # 1. Resolve network (names are usually stable, but support partial matches)
+        preview, net_id = self.resolve_network(payload.network_name)
+        if net_id is None:
             return False
 
-        # 4. Resolve Waypoint File
-        ws_wp = self._ws(SHEET_WAYPOINT_FILES)
-        h_wp = self._headers(SHEET_WAYPOINT_FILES)
-        wp_row = _find_row_by_column_value(ws_wp, h_wp.get("filename", 2), payload.mission_filename)
-        if wp_row is None:
-            return False
-        wp_id = int(ws_wp.cell(row=wp_row, column=h_wp.get("id", 1)).value)
-
-        # 5. Check Flight Routes for exact match
+        # 2. Search Flight Routes for match
         ws_fr = self._ws(SHEET_FLIGHT_ROUTES)
         h_fr = self._headers(SHEET_FLIGHT_ROUTES)
+        ws_lz = self._ws(SHEET_LANDING_ZONES)
+        h_lz = self._headers(SHEET_LANDING_ZONES)
+        ws_wp = self._ws(SHEET_WAYPOINT_FILES)
+        h_wp = self._headers(SHEET_WAYPOINT_FILES)
+        
         true_max_fr = _get_true_max_row(ws_fr)
         
-        # Criteria for duplicate route
+        # Cache LZ coords for the locations involved to speed up
+        lz_coords = {} # id -> (lat, lon)
+        
+        def get_lz_coords(lz_id):
+            if lz_id in lz_coords: return lz_coords[lz_id]
+            # Find row in LZ sheet
+            true_max_lz = _get_true_max_row(ws_lz)
+            for r in range(2, true_max_lz + 1):
+                cur_id = ws_lz.cell(row=r, column=h_lz["id"]).value
+                if cur_id is not None and int(cur_id) == lz_id:
+                    try:
+                        lat = float(ws_lz.cell(row=r, column=h_lz["latitude"]).value)
+                        lon = float(ws_lz.cell(row=r, column=h_lz["longitude"]).value)
+                        lz_coords[lz_id] = (lat, lon)
+                        return (lat, lon)
+                    except (TypeError, ValueError):
+                        break
+            return None
+
         for r in range(2, true_max_fr + 1):
-            match = (
-                int(ws_fr.cell(row=r, column=h_fr["start_lz_id"]).value) == src_lz_id and
-                int(ws_fr.cell(row=r, column=h_fr["end_lz_id"]).value) == dst_lz_id and
-                int(ws_fr.cell(row=r, column=h_fr["start_location_id"]).value) == src_loc_id and
-                int(ws_fr.cell(row=r, column=h_fr["end_location_id"]).value) == dst_loc_id and
-                int(ws_fr.cell(row=r, column=h_fr["waypoint_file_id"]).value) == wp_id and
-                int(ws_fr.cell(row=r, column=h_fr["network_id"]).value) == net_id and
-                int(ws_fr.cell(row=r, column=h_fr["takeoff_direction"]).value) == payload.takeoff_direction and
-                int(ws_fr.cell(row=r, column=h_fr["approach_direction"]).value) == payload.approach_direction
-            )
-            if match:
+            if ws_fr.cell(row=r, column=h_fr["network_id"]).value != net_id:
+                continue
+            
+            # Match directions and filenames first (cheapest)
+            f_to = int(ws_fr.cell(row=r, column=h_fr["takeoff_direction"]).value)
+            f_app = int(ws_fr.cell(row=r, column=h_fr["approach_direction"]).value)
+            
+            if (f_to != payload.takeoff_direction or f_app != payload.approach_direction):
+                continue
+                
+            # Check waypoint filename
+            wp_id_val = ws_fr.cell(row=r, column=h_fr["waypoint_file_id"]).value
+            if wp_id_val is None: continue
+            wp_id = int(wp_id_val)
+            
+            wp_row = _find_row_by_column_value(ws_wp, h_wp["id"], wp_id)
+            if wp_row is None: continue
+            
+            existing_filename = str(ws_wp.cell(row=wp_row, column=h_wp["filename"]).value).strip()
+            if existing_filename != payload.mission_filename.strip():
+                continue
+                
+            # Finally, check coordinate proximity for start/end LZs
+            start_lz_id = int(ws_fr.cell(row=r, column=h_fr["start_lz_id"]).value)
+            end_lz_id = int(ws_fr.cell(row=r, column=h_fr["end_lz_id"]).value)
+            
+            start_coords = get_lz_coords(start_lz_id)
+            end_coords = get_lz_coords(end_lz_id)
+            
+            if not start_coords or not end_coords: continue
+            
+            match_start = (abs(start_coords[0] - payload.source_latitude) < 0.0001 and 
+                           abs(start_coords[1] - payload.source_longitude) < 0.0001)
+            match_end = (abs(end_coords[0] - payload.destination_latitude) < 0.0001 and 
+                         abs(end_coords[1] - payload.destination_longitude) < 0.0001)
+                         
+            if match_start and match_end:
                 return True
 
         return False

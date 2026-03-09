@@ -75,7 +75,15 @@ async def download_file(drive_link: str, dest_path: Path) -> Path:
                 response = await client.get(confirm_url)
                 response.raise_for_status()
 
-        dest_path.write_bytes(response.content)
+        with open(dest_path, "wb") as f:
+            first_chunk = True
+            async for chunk in response.aiter_bytes():
+                if first_chunk:
+                    # Check if the first chunk looks like HTML (Google login pages start with <!doctype html> or <html)
+                    if chunk.startswith(b"<!doctype html") or chunk.startswith(b"<html"):
+                        raise ValueError("File is restricted or requires login. Ensure the link is shared as 'Anyone with the link'.")
+                    first_chunk = False
+                f.write(chunk)
 
     logger.info(f"Downloaded {drive_link} → {dest_path}")
     return dest_path

@@ -4,7 +4,7 @@ import { api } from '../api';
 import CesiumViewer from '../components/CesiumViewer';
 
 const STATUS_COLORS = {
-    pending: '#f59e0b', approved: '#10b981', rejected: '#ef4444', failed: '#dc2626',
+    pending: '#f59e0b', approved: '#10b981', rejected: '#ef4444', failed: '#dc2626', duplicate: '#6b7280',
 };
 
 export default function ReviewPage() {
@@ -97,12 +97,23 @@ export default function ReviewPage() {
         }
     };
 
+    const handleMarkDuplicate = async () => {
+        if (!window.confirm("Are you sure you want to mark this as a duplicate?")) return;
+        try {
+            await api.markAsDuplicate(id);
+            await loadSubmission();
+        } catch (err) {
+            setError(err.message);
+        }
+    };
+
     if (loading) return <div className="loading">Loading submission...</div>;
     if (!sub) return <div className="error-banner">Submission not found</div>;
 
     const p = sub.payload;
     const networkBlocked = preview?.network?.action === 'not_found';
     const filesDownloaded = sub.download_status === 'completed';
+    // Duplicate status is final, so we only allow actions if pending or if it failed previous checks
     const canApprove = filesDownloaded && !networkBlocked && sub.status === 'pending';
 
     return (
@@ -111,12 +122,15 @@ export default function ReviewPage() {
 
             <div className="review-header">
                 <h2>Submission Review</h2>
-                <span className="status-badge" style={{ backgroundColor: STATUS_COLORS[sub.status] }}>
-                    {sub.status}
-                </span>
+                <div className="header-status">
+                    <span className="status-badge" style={{ backgroundColor: STATUS_COLORS[sub.status] || '#6b7280' }}>
+                        {sub.status}
+                    </span>
+                    {sub.status === 'duplicate' && <span className="duplicate-tag">AUTO-FLAGGED</span>}
+                </div>
             </div>
 
-            {error && <div className="error-banner">{error}</div>}
+            {error && <div className="error-banner">⚠️ {error}</div>}
             {sub.error_detail && <div className="error-banner">Pipeline Error: {sub.error_detail}</div>}
 
             {/* Form Fields */}
@@ -149,6 +163,12 @@ export default function ReviewPage() {
                         </button>
                     )}
                 </div>
+                {sub.download_status === 'failed' && (
+                    <p className="dl-error-hint">
+                        <strong>Possible Fix:</strong> Ensure the Google Drive links are shared as
+                        <em> "Anyone with the link"</em> and not restricted.
+                    </p>
+                )}
             </section>
 
             {/* Cesium Viewer */}
@@ -194,6 +214,9 @@ export default function ReviewPage() {
                     <button className="btn btn-success" onClick={handleApprove}
                         disabled={!canApprove || approving}>
                         {approving ? 'Approving...' : '✓ Approve'}
+                    </button>
+                    <button className="btn btn-secondary" onClick={handleMarkDuplicate}>
+                        🛡️ Mark as Duplicate
                     </button>
                     <button className="btn btn-danger" onClick={() => setShowRejectModal(true)}>
                         ✗ Reject

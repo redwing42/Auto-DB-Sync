@@ -169,7 +169,24 @@ async def update_submission_status(
 
 # ── 3. FILE DOWNLOAD ────────────────────────────────────────────────────────
 
-@app.post("/submissions/{submission_id}/download-files", response_model=DownloadResult)
+@app.patch("/submissions/{submission_id}/mark-duplicate", response_model=SubmissionResponse)
+async def mark_as_duplicate(
+    submission_id: str,
+    store: SubmissionStore = Depends(get_store),
+):
+    """Manually flag a submission as a duplicate."""
+    sub = store.get_submission(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    
+    success = store.update_status(submission_id, SubmissionStatus.DUPLICATE)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update status")
+    
+    return store.get_submission(submission_id)
+
+
+@app.post("/submissions/{submission_id}/download-files", response_model=SubmissionResponse)
 async def download_files(
     submission_id: str,
     store: SubmissionStore = Depends(get_store),

@@ -228,6 +228,22 @@ body {
   font-size: 22px;
 }
 
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.duplicate-tag {
+  background: #374151;
+  color: #9ca3af;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: bold;
+  border: 1px solid #4b5563;
+}
+
 .section {
   background: var(--bg-section);
   border: 1px solid var(--border);
@@ -297,6 +313,16 @@ body {
 .dl-failed {
   background: #3b1219;
   color: #fca5a5;
+}
+
+.dl-error-hint {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 8px 12px;
+  border-radius: 4px;
+  border-left: 3px solid var(--danger);
 }
 
 /* ── Preview Table ───────────────────────────────────────────────────── */

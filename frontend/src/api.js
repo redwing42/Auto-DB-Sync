@@ -26,6 +26,10 @@ export const api = {
             method: 'PATCH',
             body: JSON.stringify({ status: 'rejected', reason }),
         }),
+    markAsDuplicate: (id) =>
+        request(`/submissions/${id}/mark-duplicate`, {
+            method: 'PATCH',
+        }),
 
     // Files
     downloadFiles: (id) =>
