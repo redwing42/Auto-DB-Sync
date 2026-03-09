@@ -6,7 +6,7 @@ Internal pipeline for automating new flight route ingestion into the RedWing dat
 
 Bridges the Google Forms route submission process with central database management. When a pilot submits a new route, the system:
 1. Catches the webhook from Google Workspace.
-2. Downloads and parses the associated QGC WPL 1.1 waypoint file from Google Drive.
+2. Downloads and parses the associated Mission Planner waypoint file from Google Drive.
 3. Checks for exact duplicate routes against existing local data.
 4. Queues the submission for human review on a React dashboard.
 5. Previews the route in 3D using Cesium.

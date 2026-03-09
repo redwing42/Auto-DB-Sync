@@ -14,7 +14,7 @@ from waypoint_parser import WaypointParseError, parse_waypoints_file
 
 
 class TestValidParsing:
-    """Test parsing a valid QGC WPL 1.1 file."""
+    """Test parsing a valid Mission Planner waypoint file."""
 
     def test_parses_sample_file(self, sample_waypoints_path: Path):
         result = parse_waypoints_file(sample_waypoints_path)

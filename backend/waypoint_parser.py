@@ -1,4 +1,4 @@
-"""QGC WPL 1.1 waypoint file parser for RedWing DB Automation.
+"""Mission Planner waypoint file parser for RedWing DB Automation.
 
 Parses .waypoints files in the QGroundControl WPL 1.1 format.
 Each line (after the header) is tab-separated with columns:
@@ -23,7 +23,7 @@ class WaypointParseError(Exception):
 
 
 def parse_waypoints_file(filepath: Path) -> WaypointFileResponse:
-    """Parse a QGC WPL 1.1 waypoint file and return structured data.
+    """Parse a Mission Planner waypoint file and return structured data.
 
     Args:
         filepath: Path to the .waypoints file.
