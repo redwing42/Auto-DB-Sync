@@ -441,13 +441,19 @@ async def get_network_landing_zones(
     conn = _sqlite3.connect(str(flights_db))
     conn.row_factory = _sqlite3.Row
     try:
+        # landing_zones has no network_id column — get LZs used in flight_routes for the network
         rows = conn.execute("""
-            SELECT lz.id, lz.name, lz.latitude, lz.longitude, l.id as location_id, l.name as location_name
+            SELECT DISTINCT lz.id, lz.name, lz.latitude, lz.longitude,
+                            l.id as location_id, l.name as location_name
             FROM landing_zones lz
             JOIN locations l ON lz.location_id = l.id
-            WHERE lz.network_id = ?
+            JOIN (
+                SELECT start_lz_id as lz_id, network_id FROM flight_routes WHERE network_id = ?
+                UNION
+                SELECT end_lz_id as lz_id, network_id FROM flight_routes WHERE network_id = ?
+            ) used_lz ON lz.id = used_lz.lz_id
             ORDER BY l.name, lz.name
-        """, (network_id,)).fetchall()
+        """, (network_id, network_id)).fetchall()
         return [LandingZoneInfo(**dict(r)) for r in rows]
     finally:
         conn.close()
