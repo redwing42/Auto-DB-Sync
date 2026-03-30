@@ -1,12 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Send, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
+import {
+    ArrowLeft, ArrowRight, Send, AlertTriangle, CheckCircle,
+    Loader2, Upload, FileCheck, XCircle
+} from 'lucide-react';
 import { api } from '../../api/api';
 import { useToast } from '../shared/Toast';
 import StepperProgress from './StepperProgress';
-import { validateCoordinates, validateDirections, validateFilename, validateDriveLink, validateFullPayload } from './submitValidation';
+import { validateDriveLink, validateDirections, validateFilename } from './submitValidation';
 
-const STEPS = ['Network', 'Source', 'Destination', 'Route Details', 'Drive Links', 'Summary'];
+const STEPS = ['Network', 'Upload File', 'Validate & Match', 'Drive Links', 'Review & Submit'];
+
+const PROXIMITY_THRESHOLD = 0.000001;
 
 const INITIAL_DATA = {
     network_name: '',
@@ -26,19 +31,53 @@ const INITIAL_DATA = {
     route_image_drive_link: '',
 };
 
+function matchLandingZone(lzList, lat, lng, mode = 'proximity') {
+    if (!lzList || lzList.length === 0) return null;
+    for (const lz of lzList) {
+        if (mode === 'exact') {
+            if (lz.latitude === lat && lz.longitude === lng) return lz;
+        } else {
+            if (Math.abs(lz.latitude - lat) <= PROXIMITY_THRESHOLD &&
+                Math.abs(lz.longitude - lng) <= PROXIMITY_THRESHOLD) return lz;
+        }
+    }
+    return null;
+}
+
 export default function NewRouteStepper() {
     const navigate = useNavigate();
     const addToast = useToast();
+    const fileInputRef = useRef(null);
+
     const [step, setStep] = useState(1);
     const [data, setData] = useState(INITIAL_DATA);
+
+    // Step 1 — Networks
     const [networks, setNetworks] = useState([]);
+    const [selectedNetwork, setSelectedNetwork] = useState(null);
     const [loadingNetworks, setLoadingNetworks] = useState(true);
-    const [stepErrors, setStepErrors] = useState([]);
-    const [stepWarnings, setStepWarnings] = useState([]);
+
+    // Step 2 — File parsing
+    const [waypointFile, setWaypointFile] = useState(null);
+    const [parsing, setParsing] = useState(false);
+    const [parseResult, setParseResult] = useState(null);
+    const [parseError, setParseError] = useState(null);
+
+    // Step 3 — DB matching
+    const [landingZones, setLandingZones] = useState([]);
+    const [loadingLZs, setLoadingLZs] = useState(false);
+    const [sourceMatch, setSourceMatch] = useState(null); // null = loading, false = no match, object = matched
+    const [destMatch, setDestMatch] = useState(null);
+    const [sourceUnknown, setSourceUnknown] = useState(false);
+    const [destUnknown, setDestUnknown] = useState(false);
+
+    // Step 5 — submission
     const [submitting, setSubmitting] = useState(false);
     const [validating, setValidating] = useState(false);
     const [serverValidation, setServerValidation] = useState(null);
     const [duplicateCheck, setDuplicateCheck] = useState(null);
+
+    const [stepErrors, setStepErrors] = useState([]);
 
     useEffect(() => {
         api.getNetworks()
@@ -47,85 +86,107 @@ export default function NewRouteStepper() {
             .finally(() => setLoadingNetworks(false));
     }, []);
 
-    const update = (field, value) => {
-        setData(prev => ({ ...prev, [field]: value }));
-        setStepErrors([]);
-        setStepWarnings([]);
-    };
+    const update = (field, value) => setData(prev => ({ ...prev, [field]: value }));
 
     const numVal = (field) => {
         const v = data[field];
         return v === '' || v === null || v === undefined ? 0 : Number(v);
     };
 
-    const validateCurrentStep = () => {
-        const errors = [];
-        const warnings = [];
+    // ── Step 2: parse file ──────────────────────────────────────────────
+    const handleFileSelect = async (file) => {
+        setWaypointFile(file);
+        setParseResult(null);
+        setParseError(null);
+        if (!file) return;
 
-        switch (step) {
-            case 1:
-                if (!data.network_name) errors.push('Please select a network');
-                break;
-            case 2: {
-                if (!data.source_location_name.trim()) errors.push('Source location name is required');
-                if (!data.source_takeoff_zone_name.trim()) errors.push('Source takeoff zone name is required');
-                const c = validateCoordinates(numVal('source_latitude'), numVal('source_longitude'), 'Source');
-                errors.push(...c.errors);
-                warnings.push(...c.warnings);
-                if (!data.source_latitude && data.source_latitude !== 0) errors.push('Source latitude is required');
-                if (!data.source_longitude && data.source_longitude !== 0) errors.push('Source longitude is required');
-                break;
-            }
-            case 3: {
-                if (!data.destination_location_name.trim()) errors.push('Destination location name is required');
-                if (!data.destination_landing_zone_name.trim()) errors.push('Destination landing zone name is required');
-                const c = validateCoordinates(numVal('destination_latitude'), numVal('destination_longitude'), 'Destination');
-                errors.push(...c.errors);
-                warnings.push(...c.warnings);
-                if (!data.destination_latitude && data.destination_latitude !== 0) errors.push('Destination latitude is required');
-                if (!data.destination_longitude && data.destination_longitude !== 0) errors.push('Destination longitude is required');
-                break;
-            }
-            case 4: {
-                if (data.takeoff_direction === '' || data.takeoff_direction === null) errors.push('Takeoff direction is required');
-                if (data.approach_direction === '' || data.approach_direction === null) errors.push('Approach direction is required');
-                const fn = validateFilename(data.mission_filename);
-                errors.push(...fn.errors);
-                if (data.takeoff_direction !== '' && data.approach_direction !== '') {
-                    const d = validateDirections(numVal('takeoff_direction'), numVal('approach_direction'));
-                    warnings.push(...d.warnings);
+        setParsing(true);
+        try {
+            const result = await api.parseWaypoints(file);
+            setParseResult(result);
+            update('mission_filename', result.mission_filename);
+        } catch (e) {
+            setParseError(e.message);
+        } finally {
+            setParsing(false);
+        }
+    };
+
+    // Extract key waypoints from parsed file
+    const getKeyWaypoints = () => {
+        if (!parseResult) return { takeoff: null, vtolLand: null };
+        const wps = parseResult.waypoints;
+        const takeoff = wps.find(w => [22, 84].includes(w.command)); // TAKEOFF or VTOL_TAKEOFF
+        const vtolLand = wps.find(w => [21, 85].includes(w.command)); // LAND or VTOL_LAND
+        return { takeoff, vtolLand };
+    };
+
+    // ── Step 3: load landing zones and match ───────────────────────────
+    useEffect(() => {
+        if (step === 3 && selectedNetwork) {
+            setLoadingLZs(true);
+            api.getNetworkLandingZones(selectedNetwork.id)
+                .then(lzs => {
+                    setLandingZones(lzs);
+                    const { takeoff, vtolLand } = getKeyWaypoints();
+
+                    if (takeoff) {
+                        const srcLat = takeoff.latitude;
+                        const srcLng = takeoff.longitude;
+                        const match = matchLandingZone(lzs, srcLat, srcLng, 'proximity');
+                        setSourceMatch(match || false);
+                        setSourceUnknown(!match);
+                        // Pre-fill data
+                        update('source_latitude', srcLat);
+                        update('source_longitude', srcLng);
+                        if (match) {
+                            update('source_location_name', match.location_name);
+                            update('source_takeoff_zone_name', match.name);
+                        }
+                    }
+
+                    if (vtolLand) {
+                        const dstLat = vtolLand.latitude;
+                        const dstLng = vtolLand.longitude;
+                        const match = matchLandingZone(lzs, dstLat, dstLng, 'exact');
+                        setDestMatch(match || false);
+                        setDestUnknown(!match);
+                        update('destination_latitude', dstLat);
+                        update('destination_longitude', dstLng);
+                        if (match) {
+                            update('destination_location_name', match.location_name);
+                            update('destination_landing_zone_name', match.name);
+                        }
+                    }
+                })
+                .catch(e => addToast(`Could not load landing zones: ${e.message}`))
+                .finally(() => setLoadingLZs(false));
+        }
+    }, [step, selectedNetwork]);
+
+    // ── Step 5: server validation ──────────────────────────────────────
+    useEffect(() => {
+        if (step === 5) {
+            (async () => {
+                setValidating(true);
+                setServerValidation(null);
+                setDuplicateCheck(null);
+                try {
+                    const payload = buildPayload();
+                    const [valResult, dupResult] = await Promise.all([
+                        api.validateSubmission(payload),
+                        api.checkDuplicate(payload),
+                    ]);
+                    setServerValidation(valResult);
+                    setDuplicateCheck(dupResult);
+                } catch (e) {
+                    addToast(`Validation failed: ${e.message}`);
+                } finally {
+                    setValidating(false);
                 }
-                break;
-            }
-            case 5: {
-                const m = validateDriveLink(data.mission_drive_link, 'Mission file', true);
-                errors.push(...m.errors);
-                const e = validateDriveLink(data.elevation_image_drive_link, 'Elevation image', false);
-                errors.push(...e.errors);
-                const r = validateDriveLink(data.route_image_drive_link, 'Route image', false);
-                errors.push(...r.errors);
-                break;
-            }
+            })();
         }
-
-        setStepErrors(errors);
-        setStepWarnings(warnings);
-        return errors.length === 0;
-    };
-
-    const handleNext = () => {
-        if (validateCurrentStep()) {
-            setStepErrors([]);
-            setStepWarnings([]);
-            setStep(s => s + 1);
-        }
-    };
-
-    const handleBack = () => {
-        setStepErrors([]);
-        setStepWarnings([]);
-        setStep(s => s - 1);
-    };
+    }, [step]);
 
     const buildPayload = () => ({
         network_name: data.network_name,
@@ -145,35 +206,57 @@ export default function NewRouteStepper() {
         route_image_drive_link: data.route_image_drive_link || '',
     });
 
-    const runServerValidation = async () => {
-        setValidating(true);
-        setServerValidation(null);
-        setDuplicateCheck(null);
-        try {
-            const payload = buildPayload();
-            const [valResult, dupResult] = await Promise.all([
-                api.validateSubmission(payload),
-                api.checkDuplicate(payload),
-            ]);
-            setServerValidation(valResult);
-            setDuplicateCheck(dupResult);
-        } catch (e) {
-            addToast(`Validation failed: ${e.message}`);
-        } finally {
-            setValidating(false);
+    const validateCurrentStep = () => {
+        const errors = [];
+        switch (step) {
+            case 1:
+                if (!data.network_name) errors.push('Please select a network');
+                break;
+            case 2:
+                if (!parseResult) errors.push('Please upload and parse a .waypoints file');
+                if (parseError) errors.push(`Parse failed: ${parseError}`);
+                break;
+            case 3: {
+                if (!data.source_location_name.trim()) errors.push('Source location name is required (not matched — please enter manually)');
+                if (!data.source_takeoff_zone_name.trim()) errors.push('Source takeoff zone name is required');
+                if (!data.destination_location_name.trim()) errors.push('Destination location name is required (not matched — please enter manually)');
+                if (!data.destination_landing_zone_name.trim()) errors.push('Destination landing zone name is required');
+                if (data.takeoff_direction === '' || data.takeoff_direction === null) errors.push('Takeoff direction is required');
+                if (data.approach_direction === '' || data.approach_direction === null) errors.push('Approach direction is required');
+                const fn = validateFilename(data.mission_filename);
+                errors.push(...fn.errors);
+                break;
+            }
+            case 4: {
+                const m = validateDriveLink(data.mission_drive_link, 'Mission file', true);
+                errors.push(...m.errors);
+                const e = validateDriveLink(data.elevation_image_drive_link, 'Elevation image', false);
+                errors.push(...e.errors);
+                const r = validateDriveLink(data.route_image_drive_link, 'Route image', false);
+                errors.push(...r.errors);
+                break;
+            }
+        }
+        setStepErrors(errors);
+        return errors.length === 0;
+    };
+
+    const handleNext = () => {
+        if (validateCurrentStep()) {
+            setStepErrors([]);
+            setStep(s => s + 1);
         }
     };
 
-    // Run server validation when entering summary step
-    useEffect(() => {
-        if (step === 6) runServerValidation();
-    }, [step]);
+    const handleBack = () => {
+        setStepErrors([]);
+        setStep(s => s - 1);
+    };
 
     const handleSubmit = async () => {
         setSubmitting(true);
         try {
-            const payload = buildPayload();
-            const result = await api.createSubmission(payload);
+            const result = await api.createSubmission(buildPayload());
             addToast(`Submission created: #${result.submission_id.slice(0, 8)}`);
             navigate('/');
         } catch (e) {
@@ -183,9 +266,14 @@ export default function NewRouteStepper() {
         }
     };
 
-    const canSubmit = serverValidation?.is_valid &&
-        !duplicateCheck?.is_exact_duplicate &&
-        !submitting;
+    const canSubmit = serverValidation?.is_valid && !duplicateCheck?.is_exact_duplicate && !submitting;
+
+    const { takeoff, vtolLand } = getKeyWaypoints();
+
+    // ── Match status badge ─────────────────────────────────────────────
+    const Matchbadge = ({ matched, label }) => matched
+        ? <span className="match-badge match-badge--ok"><CheckCircle size={12} /> Matched: {matched.location_name} / {matched.name}</span>
+        : <span className="match-badge match-badge--warn"><XCircle size={12} /> {label} — Unrecognized. Enter manually below.</span>;
 
     return (
         <div className="stepper-container" id="new-route-stepper">
@@ -196,22 +284,16 @@ export default function NewRouteStepper() {
             <div className="page-header"><h1>New Route Submission</h1></div>
             <StepperProgress steps={STEPS} currentStep={step} />
 
-            {/* Validation Messages */}
             {stepErrors.length > 0 && (
                 <div className="validation-box validation-error" id="step-errors">
                     <AlertTriangle size={16} />
                     <div>{stepErrors.map((e, i) => <div key={i}>{e}</div>)}</div>
                 </div>
             )}
-            {stepWarnings.length > 0 && (
-                <div className="validation-box validation-warning" id="step-warnings">
-                    <AlertTriangle size={16} />
-                    <div>{stepWarnings.map((w, i) => <div key={i}>{w}</div>)}</div>
-                </div>
-            )}
 
-            {/* Step Content */}
             <div className="stepper-content">
+
+                {/* ── STEP 1: Network ── */}
                 {step === 1 && (
                     <div className="form-step" id="step-network">
                         <h3 className="form-step-title">Select Network</h3>
@@ -224,13 +306,15 @@ export default function NewRouteStepper() {
                                     className="form-select"
                                     id="select-network"
                                     value={data.network_name}
-                                    onChange={e => update('network_name', e.target.value)}
+                                    onChange={e => {
+                                        const net = networks.find(n => n.name === e.target.value);
+                                        setSelectedNetwork(net || null);
+                                        update('network_name', e.target.value);
+                                    }}
                                 >
                                     <option value="">— Select a network —</option>
                                     {networks.map(n => (
-                                        <option key={n.id} value={n.name}>
-                                            {n.name} ({n.route_count} routes)
-                                        </option>
+                                        <option key={n.id} value={n.name}>{n.name} ({n.route_count} routes)</option>
                                     ))}
                                 </select>
                             </div>
@@ -238,86 +322,172 @@ export default function NewRouteStepper() {
                     </div>
                 )}
 
+                {/* ── STEP 2: Upload File ── */}
                 {step === 2 && (
-                    <div className="form-step" id="step-source">
-                        <h3 className="form-step-title">Source Location</h3>
-                        <div className="form-grid">
-                            <div className="form-group">
-                                <label className="form-label">Location Name</label>
-                                <input className="form-input" id="input-source-location" placeholder="e.g. HQ – Redwing Techworks"
-                                    value={data.source_location_name} onChange={e => update('source_location_name', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Takeoff Zone Name</label>
-                                <input className="form-input" id="input-source-tz" placeholder="e.g. HQ North Pad"
-                                    value={data.source_takeoff_zone_name} onChange={e => update('source_takeoff_zone_name', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Latitude</label>
-                                <input className="form-input" id="input-source-lat" type="number" step="any" placeholder="e.g. 13.1637751"
-                                    value={data.source_latitude} onChange={e => update('source_latitude', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Longitude</label>
-                                <input className="form-input" id="input-source-lng" type="number" step="any" placeholder="e.g. 77.8672772"
-                                    value={data.source_longitude} onChange={e => update('source_longitude', e.target.value)} />
-                            </div>
+                    <div className="form-step" id="step-upload">
+                        <h3 className="form-step-title">Upload Waypoint File</h3>
+                        <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
+                            Upload the <code>.waypoints</code> mission file. Source and destination coordinates will be extracted automatically.
+                        </p>
+                        <div
+                            className={`file-drop-zone ${waypointFile ? 'file-drop-zone--active' : ''}`}
+                            onClick={() => fileInputRef.current?.click()}
+                            onDragOver={e => e.preventDefault()}
+                            onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFileSelect(f); }}
+                        >
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".waypoints"
+                                style={{ display: 'none' }}
+                                onChange={e => handleFileSelect(e.target.files[0])}
+                            />
+                            {parsing ? (
+                                <div className="flex flex-col items-center gap-8">
+                                    <Loader2 size={32} className="spin" style={{ color: 'var(--primary)' }} />
+                                    <span>Parsing file...</span>
+                                </div>
+                            ) : parseResult ? (
+                                <div className="flex flex-col items-center gap-8">
+                                    <FileCheck size={32} style={{ color: 'var(--success)' }} />
+                                    <strong>{parseResult.mission_filename}</strong>
+                                    <span style={{ color: 'var(--text-secondary)' }}>{parseResult.total_waypoints} waypoints parsed</span>
+                                    {takeoff && <div className="parse-coord-row"><span>Takeoff</span> <code>{takeoff.latitude}, {takeoff.longitude}</code></div>}
+                                    {vtolLand && <div className="parse-coord-row"><span>VTOL Land</span> <code>{vtolLand.latitude}, {vtolLand.longitude}</code></div>}
+                                    <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); setParseResult(null); setWaypointFile(null); }}>
+                                        Change file
+                                    </button>
+                                </div>
+                            ) : parseError ? (
+                                <div className="flex flex-col items-center gap-8" style={{ color: 'var(--danger)' }}>
+                                    <XCircle size={32} />
+                                    <span>Parse failed: {parseError}</span>
+                                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>Click to try again</span>
+                                </div>
+                            ) : (
+                                <div className="flex flex-col items-center gap-8">
+                                    <Upload size={32} style={{ color: 'var(--text-secondary)' }} />
+                                    <span><strong>Click to upload</strong> or drag &amp; drop</span>
+                                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>.waypoints files only</span>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
 
+                {/* ── STEP 3: Validate & Match ── */}
                 {step === 3 && (
-                    <div className="form-step" id="step-destination">
-                        <h3 className="form-step-title">Destination Location</h3>
-                        <div className="form-grid">
-                            <div className="form-group">
-                                <label className="form-label">Location Name</label>
-                                <input className="form-input" id="input-dest-location" placeholder="e.g. Demo Site Alpha"
-                                    value={data.destination_location_name} onChange={e => update('destination_location_name', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Landing Zone Name</label>
-                                <input className="form-input" id="input-dest-lz" placeholder="e.g. Demo Alpha South Pad"
-                                    value={data.destination_landing_zone_name} onChange={e => update('destination_landing_zone_name', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Latitude</label>
-                                <input className="form-input" id="input-dest-lat" type="number" step="any" placeholder="e.g. 13.2100000"
-                                    value={data.destination_latitude} onChange={e => update('destination_latitude', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Longitude</label>
-                                <input className="form-input" id="input-dest-lng" type="number" step="any" placeholder="e.g. 77.9100000"
-                                    value={data.destination_longitude} onChange={e => update('destination_longitude', e.target.value)} />
-                            </div>
-                        </div>
+                    <div className="form-step" id="step-validate">
+                        <h3 className="form-step-title">Validate &amp; Match</h3>
+                        {loadingLZs ? (
+                            <div className="loading-state"><Loader2 size={16} className="spin" /> Matching coordinates against database...</div>
+                        ) : (
+                            <>
+                                {/* Source */}
+                                <div className="match-section">
+                                    <div className="match-section-title">
+                                        Source (Takeoff) — proximity match within {PROXIMITY_THRESHOLD}°
+                                    </div>
+                                    <Matchbadge matched={sourceMatch} label="No landing zone found near source coordinates" />
+                                    <div className="form-grid" style={{ marginTop: 12 }}>
+                                        <div className="form-group">
+                                            <label className="form-label">Location Name {sourceUnknown && <span className="unrecognized-tag">Unrecognized</span>}</label>
+                                            <input className="form-input" id="input-source-location"
+                                                value={data.source_location_name}
+                                                onChange={e => update('source_location_name', e.target.value)}
+                                                placeholder="Enter location name" />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Takeoff Zone Name</label>
+                                            <input className="form-input" id="input-source-tz"
+                                                value={data.source_takeoff_zone_name}
+                                                onChange={e => update('source_takeoff_zone_name', e.target.value)}
+                                                placeholder="Enter takeoff zone name" />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Latitude</label>
+                                            <input className="form-input" type="number" step="any" id="input-source-lat"
+                                                value={data.source_latitude}
+                                                onChange={e => update('source_latitude', e.target.value)} />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Longitude</label>
+                                            <input className="form-input" type="number" step="any" id="input-source-lng"
+                                                value={data.source_longitude}
+                                                onChange={e => update('source_longitude', e.target.value)} />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Destination */}
+                                <div className="match-section" style={{ marginTop: 24 }}>
+                                    <div className="match-section-title">
+                                        Destination (VTOL Land) — exact match required
+                                    </div>
+                                    <Matchbadge matched={destMatch} label="No exact landing zone match for destination coordinates" />
+                                    <div className="form-grid" style={{ marginTop: 12 }}>
+                                        <div className="form-group">
+                                            <label className="form-label">Location Name {destUnknown && <span className="unrecognized-tag">Unrecognized</span>}</label>
+                                            <input className="form-input" id="input-dest-location"
+                                                value={data.destination_location_name}
+                                                onChange={e => update('destination_location_name', e.target.value)}
+                                                placeholder="Enter location name" />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Landing Zone Name</label>
+                                            <input className="form-input" id="input-dest-lz"
+                                                value={data.destination_landing_zone_name}
+                                                onChange={e => update('destination_landing_zone_name', e.target.value)}
+                                                placeholder="Enter landing zone name" />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Latitude</label>
+                                            <input className="form-input" type="number" step="any" id="input-dest-lat"
+                                                value={data.destination_latitude}
+                                                onChange={e => update('destination_latitude', e.target.value)} />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Longitude</label>
+                                            <input className="form-input" type="number" step="any" id="input-dest-lng"
+                                                value={data.destination_longitude}
+                                                onChange={e => update('destination_longitude', e.target.value)} />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Route Details */}
+                                <div className="match-section" style={{ marginTop: 24 }}>
+                                    <div className="match-section-title">Route Details</div>
+                                    <div className="form-grid" style={{ marginTop: 12 }}>
+                                        <div className="form-group">
+                                            <label className="form-label">Takeoff Direction (°)</label>
+                                            <input className="form-input" type="number" min="0" max="360" id="input-takeoff-dir"
+                                                value={data.takeoff_direction}
+                                                onChange={e => update('takeoff_direction', e.target.value)}
+                                                placeholder="e.g. 180" />
+                                        </div>
+                                        <div className="form-group">
+                                            <label className="form-label">Approach Direction (°)</label>
+                                            <input className="form-input" type="number" min="0" max="360" id="input-approach-dir"
+                                                value={data.approach_direction}
+                                                onChange={e => update('approach_direction', e.target.value)}
+                                                placeholder="e.g. 90" />
+                                        </div>
+                                        <div className="form-group form-group--full">
+                                            <label className="form-label">Mission Filename</label>
+                                            <input className="form-input" id="input-mission-filename"
+                                                value={data.mission_filename}
+                                                onChange={e => update('mission_filename', e.target.value)} />
+                                        </div>
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
                 )}
 
+                {/* ── STEP 4: Drive Links ── */}
                 {step === 4 && (
-                    <div className="form-step" id="step-route-details">
-                        <h3 className="form-step-title">Route Details</h3>
-                        <div className="form-grid">
-                            <div className="form-group">
-                                <label className="form-label">Takeoff Direction (°)</label>
-                                <input className="form-input" id="input-takeoff-dir" type="number" min="0" max="360" placeholder="e.g. 180"
-                                    value={data.takeoff_direction} onChange={e => update('takeoff_direction', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label className="form-label">Approach Direction (°)</label>
-                                <input className="form-input" id="input-approach-dir" type="number" min="0" max="360" placeholder="e.g. 90"
-                                    value={data.approach_direction} onChange={e => update('approach_direction', e.target.value)} />
-                            </div>
-                            <div className="form-group form-group--full">
-                                <label className="form-label">Mission Filename</label>
-                                <input className="form-input" id="input-mission-filename" placeholder="e.g. HQ-DEMO-180m.waypoints"
-                                    value={data.mission_filename} onChange={e => update('mission_filename', e.target.value)} />
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {step === 5 && (
                     <div className="form-step" id="step-drive-links">
                         <h3 className="form-step-title">Google Drive Links</h3>
                         <div className="form-group">
@@ -338,59 +508,44 @@ export default function NewRouteStepper() {
                     </div>
                 )}
 
-                {step === 6 && (
+                {/* ── STEP 5: Review & Submit ── */}
+                {step === 5 && (
                     <div className="form-step" id="step-summary">
-                        <h3 className="form-step-title">Review & Confirm</h3>
+                        <h3 className="form-step-title">Review &amp; Confirm</h3>
 
-                        {/* Server validation status */}
                         {validating && (
                             <div className="validation-box validation-info">
                                 <Loader2 size={16} className="spin" /> Validating with server...
                             </div>
                         )}
-
                         {serverValidation && !serverValidation.is_valid && (
                             <div className="validation-box validation-error">
                                 <AlertTriangle size={16} />
                                 <div>
-                                    <strong>Server validation failed:</strong>
+                                    <strong>Validation failed:</strong>
                                     {serverValidation.errors.map((e, i) => <div key={i}>• {e}</div>)}
                                     {serverValidation.drive_link_errors.map((e, i) => <div key={`d${i}`}>• {e}</div>)}
                                 </div>
                             </div>
                         )}
-
-                        {serverValidation?.warnings?.length > 0 && (
-                            <div className="validation-box validation-warning">
-                                <AlertTriangle size={16} />
-                                <div>
-                                    <strong>Warnings:</strong>
-                                    {serverValidation.warnings.map((w, i) => <div key={i}>• {w}</div>)}
-                                </div>
-                            </div>
-                        )}
-
                         {duplicateCheck?.is_exact_duplicate && (
                             <div className="validation-box validation-error">
                                 <AlertTriangle size={16} />
                                 <div><strong>Exact duplicate detected:</strong> {duplicateCheck.message}</div>
                             </div>
                         )}
-
                         {duplicateCheck?.is_near_duplicate && !duplicateCheck.is_exact_duplicate && (
                             <div className="validation-box validation-warning">
                                 <AlertTriangle size={16} />
                                 <div><strong>Near-duplicate warning:</strong> {duplicateCheck.message}</div>
                             </div>
                         )}
-
                         {serverValidation?.is_valid && !duplicateCheck?.is_exact_duplicate && (
                             <div className="validation-box validation-success">
                                 <CheckCircle size={16} /> All checks passed
                             </div>
                         )}
 
-                        {/* Summary data */}
                         <div className="summary-grid">
                             <div className="summary-section">
                                 <div className="summary-section-title">Network</div>
@@ -437,18 +592,13 @@ export default function NewRouteStepper() {
                     </button>
                 )}
                 <div style={{ flex: 1 }} />
-                {step < 6 && (
-                    <button className="btn btn-primary" id="btn-next" onClick={handleNext}>
-                        Next <ArrowRight size={14} />
+                {step < 5 && (
+                    <button className="btn btn-primary" id="btn-next" onClick={handleNext} disabled={step === 2 && parsing}>
+                        {step === 2 && parsing ? <><Loader2 size={14} className="spin" /> Parsing...</> : <>Next <ArrowRight size={14} /></>}
                     </button>
                 )}
-                {step === 6 && (
-                    <button
-                        className="btn btn-primary"
-                        id="btn-submit"
-                        onClick={handleSubmit}
-                        disabled={!canSubmit}
-                    >
+                {step === 5 && (
+                    <button className="btn btn-primary" id="btn-submit" onClick={handleSubmit} disabled={!canSubmit}>
                         {submitting ? <><Loader2 size={14} className="spin" /> Submitting...</> : <><Send size={14} /> Submit Route</>}
                     </button>
                 )}

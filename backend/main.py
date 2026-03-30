@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import Settings, get_settings
@@ -22,6 +22,7 @@ from models import (
     DownloadResult,
     DownloadStatus,
     DuplicateCheckResponse,
+    LandingZoneInfo,
     NetworkInfo,
     PipelineResult,
     ResolvePreviewResponse,
@@ -422,6 +423,59 @@ async def get_route(
         return RouteInfo(**dict(row))
     finally:
         conn.close()
+
+
+@app.get("/networks/{network_id}/landing-zones", response_model=list[LandingZoneInfo])
+async def get_network_landing_zones(
+    network_id: int,
+    settings: Settings = Depends(get_settings),
+    user: dict = Depends(get_current_user),
+):
+    """List all landing zones for a network, with location name and coordinates."""
+    import sqlite3 as _sqlite3
+
+    flights_db = settings.instance_dir / "flights.db"
+    if not flights_db.exists():
+        raise HTTPException(status_code=404, detail="flights.db not found")
+
+    conn = _sqlite3.connect(str(flights_db))
+    conn.row_factory = _sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT lz.id, lz.name, lz.latitude, lz.longitude, l.id as location_id, l.name as location_name
+            FROM landing_zones lz
+            JOIN locations l ON lz.location_id = l.id
+            WHERE lz.network_id = ?
+            ORDER BY l.name, lz.name
+        """, (network_id,)).fetchall()
+        return [LandingZoneInfo(**dict(r)) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/waypoints/parse", response_model=WaypointFileResponse)
+async def parse_waypoints_upload(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    """Stateless endpoint: parse an uploaded .waypoints file and return structured waypoint data."""
+    import tempfile, os
+
+    if not file.filename.endswith(".waypoints"):
+        raise HTTPException(status_code=400, detail="Only .waypoints files are accepted")
+
+    contents = await file.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".waypoints") as tmp:
+        tmp.write(contents)
+        tmp_path = Path(tmp.name)
+
+    try:
+        result = parse_waypoints_file(tmp_path)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        os.unlink(tmp_path)
 
 
 # ── 2. SUBMISSIONS API ──────────────────────────────────────────────────────

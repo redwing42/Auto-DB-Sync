@@ -127,4 +127,26 @@ export const api = {
     getNetworks: () => authFetch('/networks'),
     getNetworkRoutes: (networkId) => authFetch(`/networks/${networkId}/routes`),
     getRoute: (routeId) => authFetch(`/routes/${routeId}`),
+    getNetworkLandingZones: (networkId) => authFetch(`/networks/${networkId}/landing-zones`),
+
+    // ── Waypoint File Parsing ────────────────────────────────────────────
+    parseWaypoints: async (file) => {
+        let token = null;
+        try { token = await auth.currentUser?.getIdToken(false); } catch {}
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/waypoints/parse`, {
+            method: 'POST',
+            headers: {
+                'ngrok-skip-browser-warning': 'true',
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: formData,
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(err.detail || `HTTP ${response.status}`);
+        }
+        return response.json();
+    },
 };
