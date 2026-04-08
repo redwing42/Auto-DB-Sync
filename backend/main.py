@@ -26,6 +26,7 @@ from models import (
     AuditRecord,
     DownloadResult,
     DownloadStatus,
+    DraftResponse,
     DuplicateCheckResponse,
     LandingZoneInfo,
     LocationInfo,
@@ -38,6 +39,8 @@ from models import (
     SubmissionPayload,
     SubmissionResponse,
     SubmissionStatus,
+    SubmissionType,
+    UpdateSubmissionPayload,
     ValidationResponse,
     WaypointFileResponse,
     WorkflowState,
@@ -127,6 +130,11 @@ def init_app() -> None:
 @app.on_event("startup")
 async def startup_event():
     init_app()
+    # Phase 4: Clean up stale drafts older than 7 days
+    store = get_store()
+    stale_count = store.soft_delete_stale_drafts(days=7)
+    if stale_count > 0:
+        logger.info(f"Soft-deleted {stale_count} stale draft(s) older than 7 days")
 
 
 # ── Auth Helper ──────────────────────────────────────────────────────────────
@@ -218,10 +226,10 @@ async def create_submission(
             "warnings": validation.warnings,
         })
 
-    # Check for duplicate in Excel
+    # Check for duplicate in Excel (only for new routes)
     status = SubmissionStatus.PENDING
 
-    if settings.excel_path.exists():
+    if not payload.is_update and settings.excel_path.exists():
         updater = ExcelUpdater(settings.excel_path)
         try:
             updater.open()
@@ -233,13 +241,26 @@ async def create_submission(
         finally:
             updater.close()
 
+    # Phase 4: Determine submission type and changed_fields
+    submission_type = "UPDATE" if payload.is_update else "NEW_ROUTE"
+    changed_fields_json = None
+    parent_submission_id = None
+    if isinstance(payload, UpdateSubmissionPayload):
+        import json as _json
+        if payload.changed_fields:
+            changed_fields_json = _json.dumps(payload.changed_fields)
+        parent_submission_id = payload.parent_submission_id
+
     submission_id = store.add_submission(
         payload, 
         status=status, 
         user_uid=user['uid'], 
         source="ui",
         submitted_by_name=user.get('display_name', user['email']),
-        submitted_by_role=user.get('role', 'operator')
+        submitted_by_role=user.get('role', 'operator'),
+        submission_type=submission_type,
+        changed_fields=changed_fields_json,
+        parent_submission_id=parent_submission_id,
     )
     
     # Phase 3: Audit & Notification
@@ -250,7 +271,7 @@ async def create_submission(
         performed_by_uid=user['uid'],
         performed_by_name=user.get('display_name', user['email']),
         performed_by_role=user.get('role', 'operator'),
-        metadata={"source": "ui"}
+        metadata={"source": "ui", "submission_type": submission_type}
     )
     
     email_service.send_submission_notification(
@@ -260,7 +281,7 @@ async def create_submission(
         submitter_role=user.get('role', 'operator')
     )
 
-    logger.info(f"UI submission created: {submission_id} by {user['email']}")
+    logger.info(f"UI submission created: {submission_id} by {user['email']} ({submission_type})")
     return {
         "submission_id": submission_id,
         "status": status.value,
@@ -318,12 +339,20 @@ async def check_duplicate(
             and p.takeoff_direction == payload.takeoff_direction
             and p.approach_direction == payload.approach_direction
         ):
+            # If it's an update, don't flag against approved submissions (we are updating them!)
+            if payload.is_update and sub.status == SubmissionStatus.APPROVED:
+                continue
+
             result.is_exact_duplicate = True
             result.exact_match_id = sub.id
             result.message = f"Exact duplicate of submission #{sub.id[:8]} ({sub.status.value})"
             return result
 
-    # 2. Check flights.db for already-approved routes
+    # 2. Check flights.db for already-approved routes (only for new routes)
+    if payload.is_update:
+        result.message = "Update submission - bypassing duplicate check against existing routes."
+        return result
+
     flights_db = settings.instance_dir / "flights.db"
     if flights_db.exists():
         try:
@@ -1129,6 +1158,113 @@ async def get_cesium_token(settings: Settings = Depends(get_settings), user: dic
     return {"token": settings.CESIUM_ION_TOKEN}
 
 
+# ── DRAFTS (Phase 4) ────────────────────────────────────────────────────────
+
+class DraftSaveRequest(BaseModel):
+    payload_json: str
+    submission_type: str = "NEW_ROUTE"
+    draft_id: Optional[str] = None
+    parent_submission_id: Optional[str] = None
+    label: Optional[str] = None
+
+
+@app.post("/drafts", response_model=dict)
+async def save_draft(
+    body: DraftSaveRequest,
+    store: SubmissionStore = Depends(get_store),
+    audit_store: AuditStore = Depends(get_audit_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Save or update a draft submission."""
+    draft_id = store.save_draft(
+        user_uid=user['uid'],
+        payload_json=body.payload_json,
+        submission_type=body.submission_type,
+        draft_id=body.draft_id,
+        parent_submission_id=body.parent_submission_id,
+        label=body.label,
+    )
+    audit_store.add_record(
+        draft_id,
+        AuditActionType.DRAFT_SAVED,
+        performed_by_uid=user['uid'],
+        performed_by_name=user.get('display_name', user['email']),
+        performed_by_role=user.get('role', 'operator'),
+    )
+    return {"draft_id": draft_id}
+
+
+@app.get("/drafts", response_model=List[DraftResponse])
+async def list_drafts(
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """List all drafts for the current user."""
+    return store.get_drafts_by_user(user['uid'])
+
+
+@app.get("/drafts/{draft_id}", response_model=DraftResponse)
+async def get_draft(
+    draft_id: str,
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Get a specific draft by ID."""
+    draft = store.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft.created_by_uid != user['uid']:
+        raise HTTPException(status_code=403, detail="Not your draft")
+    return draft
+
+
+@app.delete("/drafts/{draft_id}")
+async def delete_draft(
+    draft_id: str,
+    store: SubmissionStore = Depends(get_store),
+    audit_store: AuditStore = Depends(get_audit_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Soft-delete a draft."""
+    draft = store.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft.created_by_uid != user['uid']:
+        raise HTTPException(status_code=403, detail="Not your draft")
+    store.delete_draft(draft_id, user['uid'])
+    audit_store.add_record(
+        draft_id,
+        AuditActionType.DRAFT_DELETED,
+        performed_by_uid=user['uid'],
+        performed_by_name=user.get('display_name', user['email']),
+        performed_by_role=user.get('role', 'operator'),
+    )
+    return {"status": "deleted"}
+
+
+# ── RESUBMISSION HYDRATION ──────────────────────────────────────────────────
+
+@app.get("/submissions/{submission_id}/resubmit-data")
+async def get_resubmit_data(
+    submission_id: str,
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Hydration endpoint: returns a rejected submission's payload for resubmission."""
+    sub = store.get_submission(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if sub.status != SubmissionStatus.REJECTED:
+        raise HTTPException(status_code=400, detail="Only rejected submissions can be resubmitted")
+    return {
+        "parent_submission_id": submission_id,
+        "submission_type": sub.submission_type,
+        "payload": sub.payload.model_dump(),
+        "changed_fields": sub.changed_fields,
+        "rejection_reason": sub.rejection_reason,
+    }
+
+
 # ── Health Check ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -1156,21 +1292,6 @@ async def health(settings: Settings = Depends(get_settings)):
     except Exception as e:
         comp_status["excel"] = f"error: {str(e)}"
         
-    # Check Ngrok
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get("http://localhost:4040/api/tunnels", timeout=2.0)
-            if resp.status_code == 200:
-                tunnels = resp.json().get('tunnels', [])
-                if any(t.get('public_url') == f"https://{settings.NGROK_DOMAIN}" for t in tunnels):
-                    comp_status["ngrok"] = "ok"
-                else:
-                    comp_status["ngrok"] = "tunnel_missing_or_mismatch"
-            else:
-                comp_status["ngrok"] = "api_error"
-    except Exception:
-        comp_status["ngrok"] = "unreachable"
-
     return {
         "status": "ok",
         "service": "redwing-db-automation",
