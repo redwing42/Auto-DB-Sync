@@ -229,11 +229,7 @@ export default function SubmissionDetail() {
                     <span style={{ margin: '0 8px' }}>—</span>
                     <span style={{ fontWeight: 500 }}>{p.source_location_name} → {p.destination_location_name}</span>
                     {p.is_update && (
-                        <span style={{
-                            marginLeft: '12px', fontSize: '0.7rem', fontWeight: 600,
-                            padding: '2px 6px', borderRadius: '4px',
-                            backgroundColor: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd'
-                        }}>
+                        <span className="submission-type-badge update" style={{ marginLeft: '12px' }}>
                             UPDATE
                         </span>
                     )}
@@ -256,53 +252,77 @@ export default function SubmissionDetail() {
                 </div>
                 
                 {/* Participant Ribbon */}
-                <div style={{ display: 'flex', gap: '24px', margin: '12px 0 24px', padding: '12px 16px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                <div className="participant-ribbon">
                     {sub.submitted_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Submitted by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.submitted_by_name}</div>
+                            <div className="ribbon-label">Submitted by</div>
+                            <div className="ribbon-value">{sub.submitted_by_name}</div>
                         </div>
                     )}
                     {sub.viewed_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Viewed by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.viewed_by_name}</div>
+                            <div className="ribbon-label">Viewed by</div>
+                            <div className="ribbon-value">{sub.viewed_by_name}</div>
                         </div>
                     )}
                     {sub.reviewed_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Reviewed by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.reviewed_by_name}</div>
+                            <div className="ribbon-label">Reviewed by</div>
+                            <div className="ribbon-value">{sub.reviewed_by_name}</div>
                         </div>
                     )}
                     {sub.verified_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Verified by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.verified_by_name}</div>
+                            <div className="ribbon-label">Verified by</div>
+                            <div className="ribbon-value">{sub.verified_by_name}</div>
                         </div>
                     )}
                     {sub.validated_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Validated by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.validated_by_name}</div>
+                            <div className="ribbon-label">Validated by</div>
+                            <div className="ribbon-value">{sub.validated_by_name}</div>
                         </div>
                     )}
                     {sub.approved_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Approved by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.approved_by_name}</div>
+                            <div className="ribbon-label">Approved by</div>
+                            <div className="ribbon-value">{sub.approved_by_name}</div>
                         </div>
                     )}
                     {sub.db_updated_by_name && (
                         <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>DB Updated by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.db_updated_by_name}</div>
+                            <div className="ribbon-label">DB Updated by</div>
+                            <div className="ribbon-value">{sub.db_updated_by_name}</div>
                         </div>
                     )}
                 </div>
 
-                {error && <div className="banner banner-error">⚠ {error}</div>}
-                {sub.error_detail && <div className="banner banner-error">Pipeline Error: {sub.error_detail}</div>}
+                {error && <div className="banner banner-error mb-16">⚠ {error}</div>}
+                {sub.error_detail && <div className="banner banner-error mb-16">Pipeline Error: {sub.error_detail}</div>}
+                {sub.status === 'failed' && <div className="banner banner-error mb-16">⚠ Mission execution failed. Check logs for details.</div>}
+                {sub.status === 'rejected' && (
+                    <div className="banner banner-caution mb-16 flex items-center justify-between">
+                        <div>
+                            <div className="font-bold flex items-center gap-2 mb-1">
+                                <span className="text-lg">⚠</span> Mission Rejected
+                            </div>
+                            <div className="text-sm opacity-90">
+                                <strong>Reason:</strong> {sub.status_metadata?.rejection_reason || 'No reason provided.'}
+                            </div>
+                        </div>
+                        <RequiresRole role="operator">
+                            <button
+                                className="btn btn-sm btn-caution"
+                                onClick={() => {
+                                    const path = sub.payload?.is_update ? '/submit/update' : '/submit/new';
+                                    navigate(`${path}?resubmit=${sub.id}`);
+                                }}
+                            >
+                                Resubmit with Changes
+                            </button>
+                        </RequiresRole>
+                    </div>
+                )}
 
                 {/* Tab and Action Row */}
                 <div className="flex items-center justify-between border-bottom mb-24" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -354,19 +374,6 @@ export default function SubmissionDetail() {
                                     </button>
                                 </RequiresRole>
                             </>
-                        )}
-                        {sub.status === 'rejected' && (
-                            <RequiresRole role="operator">
-                                <button
-                                    className="btn btn-sm btn-primary"
-                                    onClick={() => {
-                                        const path = sub.payload?.is_update ? '/submit/update' : '/submit/new';
-                                        navigate(`${path}?resubmit=${sub.id}`);
-                                    }}
-                                >
-                                    Resubmit Data
-                                </button>
-                            </RequiresRole>
                         )}
                     </div>
                 </div>

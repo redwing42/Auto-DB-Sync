@@ -26,12 +26,14 @@ const NAV_ITEMS = [
             { label: 'All', path: '/submissions', icon: ListFilter, filter: null },
             { label: 'Pending', path: '/submissions?status=pending', icon: ListFilter, filter: 'pending' },
             { label: 'Approved', path: '/submissions?status=approved', icon: ListFilter, filter: 'approved' },
+            { label: 'Rejected', path: '/submissions?status=rejected', icon: ListFilter, filter: 'rejected' },
+            { label: 'Failed', path: '/submissions?status=failed', icon: ListFilter, filter: 'failed' },
         ],
     },
     {
         section: 'Tools',
         items: [
-            { label: 'DB Stats', path: '/stats', icon: BarChart3 },
+            { label: 'Database Health', path: '/stats', icon: BarChart3 },
             { label: 'LZ Management', path: '/lz-management', icon: MapPin },
         ],
     },

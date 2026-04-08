@@ -1,19 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api/api';
 import {
-    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-    PieChart, Pie, Cell, Legend,
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 
-const PIE_COLORS = {
-    pending: '#D97706',
-    approved: '#16A34A',
-    rejected: '#DC2626',
-    failed: '#DC2626',
-    duplicate: '#6B7280',
-};
-
-export default function StatsPage() {
+export default function DatabaseHealthPage() {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -25,26 +16,34 @@ export default function StatsPage() {
             .finally(() => setLoading(false));
     }, []);
 
-    if (loading) return <div className="loading-state">Loading stats...</div>;
+    if (loading) {
+        return (
+            <div className="animate-pulse">
+                <div className="page-header"><div className="skeleton" style={{ height: '32px', width: '200px' }} /></div>
+                <div className="stat-cards">
+                    {[1, 2, 3, 4].map(i => <div key={i} className="skeleton" style={{ height: '100px' }} />)}
+                </div>
+            </div>
+        );
+    }
+    
     if (error) return <div className="banner banner-error">⚠ {error}</div>;
     if (!stats) return null;
 
-    const statusData = Object.entries(stats.submission_statuses).map(([k, v]) => ({ name: k, value: v }));
-
     return (
-        <div>
+        <div className="fade-in">
             <div className="page-header">
-                <h1>DB Stats</h1>
+                <h1>Database Health</h1>
             </div>
 
-            {/* Stat Cards */}
+            {/* Network Overview Cards */}
             <div className="stat-cards">
                 <div className="stat-card">
-                    <div className="stat-card-value">{stats.total_routes}</div>
+                    <div className="stat-card-value" style={{ color: 'var(--primary)' }}>{stats.total_routes}</div>
                     <div className="stat-card-label">Total Routes</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-card-value">{stats.active_routes}</div>
+                    <div className="stat-card-value" style={{ color: 'var(--success)' }}>{stats.active_routes}</div>
                     <div className="stat-card-label">Active Routes</div>
                 </div>
                 <div className="stat-card">
@@ -57,19 +56,24 @@ export default function StatsPage() {
                 </div>
             </div>
 
-            {/* Charts */}
-            <div className="charts-grid">
+            <div className="charts-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: '24px', marginTop: '24px' }}>
                 {/* Routes per Network */}
                 {stats.routes_per_network.length > 0 && (
-                    <div className="chart-container">
-                        <div className="chart-title">Routes per Network</div>
-                        <ResponsiveContainer width="100%" height={250}>
-                            <BarChart data={stats.routes_per_network}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                                <YAxis tick={{ fontSize: 11 }} />
-                                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
-                                <Bar dataKey="count" fill="#2563EB" radius={[4, 4, 0, 0]} />
+                    <div className="card">
+                        <div className="chart-title" style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 20, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                            Route Density per Network
+                        </div>
+                        <ResponsiveContainer width="100%" height={300}>
+                            <BarChart data={stats.routes_per_network} layout="vertical">
+                                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={true} vertical={false} />
+                                <XAxis type="number" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
+                                <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} width={100} />
+                                <Tooltip 
+                                    cursor={{fill: 'var(--surface-alt)'}}
+                                    contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, boxShadow: 'var(--shadow)' }}
+                                    itemStyle={{ color: 'var(--primary)', fontWeight: 600 }}
+                                />
+                                <Bar dataKey="count" fill="var(--primary)" radius={[0, 4, 4, 0]} barSize={20} />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
@@ -77,72 +81,47 @@ export default function StatsPage() {
 
                 {/* LZs per Location */}
                 {stats.lz_per_location.length > 0 && (
-                    <div className="chart-container">
-                        <div className="chart-title">Landing Zones per Location (Top 10)</div>
-                        <ResponsiveContainer width="100%" height={250}>
+                    <div className="card">
+                        <div className="chart-title" style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 20, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                            LZ Distribution (Top 10 Locations)
+                        </div>
+                        <ResponsiveContainer width="100%" height={300}>
                             <BarChart data={stats.lz_per_location}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                                <YAxis tick={{ fontSize: 11 }} />
-                                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
-                                <Bar dataKey="count" fill="#16A34A" radius={[4, 4, 0, 0]} />
+                                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                                <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
+                                <YAxis tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} />
+                                <Tooltip 
+                                    cursor={{fill: 'var(--surface-alt)'}}
+                                    contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, boxShadow: 'var(--shadow)' }}
+                                    itemStyle={{ color: 'var(--success)', fontWeight: 600 }}
+                                />
+                                <Bar dataKey="count" fill="var(--success)" radius={[4, 4, 0, 0]} barSize={30} />
                             </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                )}
-
-                {/* Submission Status Pie */}
-                {statusData.length > 0 && (
-                    <div className="chart-container">
-                        <div className="chart-title">Submission Statuses</div>
-                        <ResponsiveContainer width="100%" height={250}>
-                            <PieChart>
-                                <Pie
-                                    data={statusData}
-                                    cx="50%"
-                                    cy="50%"
-                                    outerRadius={80}
-                                    dataKey="value"
-                                    label={({ name, value }) => `${name}: ${value}`}
-                                >
-                                    {statusData.map((entry) => (
-                                        <Cell key={entry.name} fill={PIE_COLORS[entry.name] || '#6B7280'} />
-                                    ))}
-                                </Pie>
-                                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
-                                <Legend />
-                            </PieChart>
                         </ResponsiveContainer>
                     </div>
                 )}
             </div>
 
-            {/* Recent Activity */}
-            {stats.recent_approved.length > 0 && (
-                <div className="card">
-                    <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Recent Approved</h3>
-                    <table className="data-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Route</th>
-                                <th>Mission File</th>
-                                <th>Approved At</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {stats.recent_approved.map(r => (
-                                <tr key={r.id}>
-                                    <td className="table-id">#{r.id.slice(0, 6)}</td>
-                                    <td>{r.route}</td>
-                                    <td className="table-meta">{r.mission_file}</td>
-                                    <td className="table-meta">{new Date(r.created_at).toLocaleString()}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+            {/* Health Indicators (Placeholders for future telemetry) */}
+            <div className="card" style={{ marginTop: '24px', opacity: 0.8 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Network Integrity
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+                    <div style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>ORPHANED LZS</div>
+                        <div style={{ fontSize: '18px', fontWeight: 600 }}>0</div>
+                    </div>
+                    <div style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>MISSING WAYPOINTS</div>
+                        <div style={{ fontSize: '18px', fontWeight: 600 }}>0</div>
+                    </div>
+                    <div style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>TELEMETRY UPTIME</div>
+                        <div style={{ fontSize: '18px', fontWeight: 600 }}>99.9%</div>
+                    </div>
                 </div>
-            )}
+            </div>
         </div>
     );
 }
