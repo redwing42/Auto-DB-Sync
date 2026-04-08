@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Sun, Moon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
 
 export default function TopBar() {
     const { user, logout } = useAuth();
+    const { theme, toggleTheme } = useTheme();
     const [query, setQuery] = useState('');
     const [showMenu, setShowMenu] = useState(false);
 
@@ -27,6 +29,14 @@ export default function TopBar() {
             </div>
 
             <div className="topbar-actions">
+                <button 
+                  onClick={toggleTheme}
+                  className="btn-theme-toggle"
+                  title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+                >
+                  {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+                </button>
+
                 <div style={{ position: 'relative' }}>
                     <img
                         src={user?.photoURL || 'https://www.google.com/favicon.ico'}

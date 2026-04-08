@@ -1,15 +1,24 @@
 /* ── RedWing Ops Dashboard — Design System ──────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
+@import "leaflet/dist/leaflet.css";
+
 :root {
-  /* Surfaces */
+  /* Common Geometry & Layout */
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-btn: 6px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --topbar-h: 52px;
+  --sidebar-w: 200px;
+  --sidebar-w-collapsed: 48px;
+
+  /* Light Theme (Default) */
   --bg: #FFFFFF;
   --surface: #F8F9FA;
   --sidebar-bg: #FAFAFA;
   --sidebar-active: #F0F4FF;
   --border: #E5E7EB;
-
-  /* Accents */
   --primary: #2563EB;
   --primary-light: rgba(37, 99, 235, 0.08);
   --success: #16A34A;
@@ -22,21 +31,44 @@
   --info-bg: rgba(37, 99, 235, 0.10);
   --muted: #6B7280;
   --muted-bg: rgba(107, 114, 128, 0.10);
-
-  /* Text */
   --text: #111827;
   --text-secondary: #6B7280;
   --text-muted: #9CA3AF;
+  --skeleton: #F1F5F9;
+}
 
-  /* Geometry */
-  --radius: 8px;
-  --radius-sm: 4px;
-  --radius-btn: 6px;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+[data-theme='dark'] {
+  --bg: #0F172A;
+  --surface: #1E293B;
+  --sidebar-bg: #0B1120;
+  --sidebar-active: #1E293B;
+  --border: #334155;
+  --primary: #3B82F6;
+  --primary-light: rgba(59, 130, 246, 0.15);
+  --success: #22C55E;
+  --success-bg: rgba(34, 197, 94, 0.15);
+  --danger: #EF4444;
+  --danger-bg: rgba(239, 68, 68, 0.15);
+  --warning: #F59E0B;
+  --warning-bg: rgba(245, 158, 11, 0.15);
+  --info: #3B82F6;
+  --info-bg: rgba(59, 130, 246, 0.15);
+  --muted: #94A3B8;
+  --muted-bg: rgba(148, 163, 184, 0.15);
+  --text: #F1F5F9;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+  --skeleton: #334155;
+  --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+}
 
-  /* Layout */
-  --topbar-h: 52px;
-  --sidebar-w: 200px;
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ── Reset ──────────────────────────────────────────────────────────────── */
@@ -179,9 +211,18 @@ a:hover {
   border-right: 1px solid var(--border);
   padding: 16px 0;
   overflow-y: auto;
+  overflow-x: hidden;
   height: calc(100vh - var(--topbar-h));
   position: sticky;
   top: var(--topbar-h);
+  transition: width 0.2s ease, min-width 0.2s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-collapsed .sidebar {
+  width: var(--sidebar-w-collapsed);
+  min-width: var(--sidebar-w-collapsed);
 }
 
 .sidebar-section {
@@ -227,6 +268,80 @@ a:hover {
   border-left-color: #2563EB;
 }
 
+.sidebar-collapsed .sidebar-item {
+  padding: 8px 13px;
+  justify-content: center;
+}
+
+.sidebar-collapsed .sidebar-item span {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-section-title {
+  display: none;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.btn-toggle-sidebar {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.btn-toggle-sidebar:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn-theme-toggle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-theme-toggle:hover {
+  background: var(--sidebar-active);
+  transform: rotate(12deg);
+}
+
+.skeleton {
+  background: var(--skeleton);
+  background-image: linear-gradient(
+    90deg,
+    var(--skeleton) 0px,
+    var(--surface) 40px,
+    var(--skeleton) 80px
+  );
+  background-size: 600px;
+  animation: skeleton-pulse 1.6s infinite linear;
+  border-radius: 4px;
+}
+
+@keyframes skeleton-pulse {
+  0% { background-position: -100px; }
+  100% { background-position: 500px; }
+}
+
 .sidebar-badge {
   margin-left: auto;
   background: var(--primary);
@@ -237,6 +352,18 @@ a:hover {
   border-radius: 10px;
   min-width: 20px;
   text-align: center;
+}
+
+.sidebar-collapsed .sidebar-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin-left: 0;
+  min-width: 12px;
+  height: 12px;
+  padding: 0;
+  font-size: 8px;
+  line-height: 12px;
 }
 
 /* ── Page Header ────────────────────────────────────────────────────────── */
@@ -2594,4 +2721,39 @@ th.col-auto {
 .submission-type-badge.update {
   background: #FFFBEB;
   color: #D97706;
+}
+
+/* ── Leaflet Theme Overrides (Phase 5) ────────────────────────────────── */
+.leaflet-container {
+  background: var(--bg-card) !important;
+  color: var(--text) !important;
+  font-family: inherit !important;
+}
+
+[data-theme="dark"] .leaflet-container {
+  background: #111827 !important;
+}
+
+.leaflet-popup-content-wrapper, .leaflet-popup-tip {
+  background: var(--bg-card) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow) !important;
+  backdrop-filter: blur(8px);
+}
+
+.leaflet-control-zoom-in, .leaflet-control-zoom-out {
+  background: var(--bg-card) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.leaflet-control-zoom-in:hover, .leaflet-control-zoom-out:hover {
+  background: var(--surface) !important;
+}
+
+.leaflet-container .leaflet-control-attribution {
+  background: rgba(0, 0, 0, 0.4) !important;
+  color: #94A3B8 !important;
+  border-top-left-radius: 4px;
 }

@@ -7,6 +7,8 @@ resolve preview, and approval pipeline.
 from __future__ import annotations
 
 import logging
+import sqlite3
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -1262,6 +1264,92 @@ async def get_resubmit_data(
         "payload": sub.payload.model_dump(),
         "changed_fields": sub.changed_fields,
         "rejection_reason": sub.rejection_reason,
+    }
+
+
+@app.get("/stats/team-activity")
+async def get_team_activity_stats(
+    audit_store: AuditStore = Depends(get_audit_store),
+    user: dict = Depends(require_role('reviewer')),
+):
+    """Return team-wide activity stats for the dashboard."""
+    return audit_store.get_team_activity()
+
+
+@app.get("/network-map")
+async def get_network_map(
+    settings: Settings = Depends(get_settings),
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Return all routes and locations for the network map, including pending submissions."""
+    flights_db = settings.instance_dir / "flights.db"
+    
+    routes = []
+    locations = []
+    lzs = []
+
+    if flights_db.exists():
+        conn = sqlite3.connect(flights_db)
+        conn.row_factory = sqlite3.Row
+        
+        # Get all active routes
+        routes_rows = conn.execute("""
+            SELECT 
+                r.id, r.network_id,
+                l1.name as start_location_name, l2.name as end_location_name,
+                lz1.name as start_lz_name, lz2.name as end_lz_name,
+                lz1.latitude as start_latitude, lz1.longitude as start_longitude,
+                lz2.latitude as end_latitude, lz2.longitude as end_longitude,
+                wf.filename as mission_filename, r.status
+            FROM flight_routes r
+            JOIN landing_zones lz1 ON r.start_lz_id = lz1.id
+            JOIN landing_zones lz2 ON r.end_lz_id = lz2.id
+            JOIN locations l1 ON lz1.location_id = l1.id
+            JOIN locations l2 ON lz2.location_id = l2.id
+            LEFT JOIN waypoint_files wf ON r.waypoint_file_id = wf.id
+            WHERE r.status = 1
+        """).fetchall()
+        routes = [dict(r) for r in routes_rows]
+
+        # Get all locations
+        loc_rows = conn.execute("SELECT id, name, code FROM locations").fetchall()
+        locations = [dict(l) for l in loc_rows]
+        
+        # Get all LZs
+        lz_rows = conn.execute("""
+            SELECT lz.id, lz.name, lz.latitude, lz.longitude, l.name as location_name
+            FROM landing_zones lz
+            JOIN locations l ON lz.location_id = l.id
+        """).fetchall()
+        lzs = [dict(lz) for lz in lz_rows]
+
+        conn.close()
+
+    # Add pending submissions (this week)
+    pending_submissions = []
+    all_subs = store.list_submissions()
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    
+    for sub in all_subs:
+        sub_time = datetime.fromisoformat(sub.created_at.replace('Z', '+00:00'))
+        if sub.status == SubmissionStatus.PENDING and sub_time >= week_ago:
+            pending_submissions.append({
+                "id": sub.id,
+                "route": f"{sub.payload.source_location_name} → {sub.payload.destination_location_name}",
+                "start_latitude": sub.payload.source_latitude,
+                "start_longitude": sub.payload.source_longitude,
+                "end_latitude": sub.payload.destination_latitude,
+                "end_longitude": sub.payload.destination_longitude,
+                "created_at": sub.created_at,
+                "submitted_by": sub.submitted_by_name
+            })
+
+    return {
+        "routes": routes,
+        "locations": locations,
+        "landing_zones": lzs,
+        "pending_submissions": pending_submissions
     }
 
 

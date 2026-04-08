@@ -227,4 +227,8 @@ export const api = {
         if (!response.ok) throw await apiError(response);
         return response.json();
     },
+
+    // ── Phase 5: Network Map & Transparency ──────────────────────────────
+    getTeamActivity: () => authFetch('/stats/team-activity'),
+    getNetworkMap: () => authFetch('/network-map'),
 };
