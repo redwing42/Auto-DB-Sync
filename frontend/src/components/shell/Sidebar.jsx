@@ -8,7 +8,11 @@ import {
     ChevronLeft, 
     ChevronRight, 
     Globe,
-    ListFilter
+    LayoutList,
+    Clock,
+    CheckCircle,
+    XCircle,
+    AlertTriangle
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -23,11 +27,11 @@ const NAV_ITEMS = [
     {
         section: 'Submissions',
         items: [
-            { label: 'All', path: '/submissions', icon: ListFilter, filter: null },
-            { label: 'Pending', path: '/submissions?status=pending', icon: ListFilter, filter: 'pending' },
-            { label: 'Approved', path: '/submissions?status=approved', icon: ListFilter, filter: 'approved' },
-            { label: 'Rejected', path: '/submissions?status=rejected', icon: ListFilter, filter: 'rejected' },
-            { label: 'Failed', path: '/submissions?status=failed', icon: ListFilter, filter: 'failed' },
+            { label: 'All', path: '/submissions', icon: LayoutList, filter: null, iconColor: 'var(--text-secondary)' },
+            { label: 'Pending', path: '/submissions?status=pending', icon: Clock, filter: 'pending', iconColor: 'var(--warning)' },
+            { label: 'Approved', path: '/submissions?status=approved', icon: CheckCircle, filter: 'approved', iconColor: 'var(--success)' },
+            { label: 'Rejected', path: '/submissions?status=rejected', icon: XCircle, filter: 'rejected', iconColor: 'var(--danger)' },
+            { label: 'Failed', path: '/submissions?status=failed', icon: AlertTriangle, filter: 'failed', iconColor: 'var(--caution)' },
         ],
     },
     {
@@ -97,7 +101,7 @@ export default function Sidebar({ pendingCount = 0, collapsed, setCollapsed }) {
                                 title={collapsed ? item.label : ""}
                                 style={{ position: 'relative' }}
                             >
-                                {item.icon && <item.icon size={18} />}
+                                {item.icon && <item.icon size={18} style={item.iconColor ? { color: item.iconColor } : undefined} />}
                                 <span>{item.label}</span>
                                 {item.label === 'Pending' && pendingCount > 0 && (
                                     <span className="sidebar-badge">{pendingCount}</span>
@@ -120,4 +124,3 @@ export default function Sidebar({ pendingCount = 0, collapsed, setCollapsed }) {
         </nav>
     );
 }
-

@@ -17,10 +17,10 @@ export default function StatusBadge({ status, reason }) {
             
             {reason && (
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50">
-                    <div className="bg-slate-900 text-white text-[10px] px-2 py-1.5 rounded shadow-xl whitespace-normal min-w-[120px] max-w-[200px] leading-tight text-center">
-                        <div className="font-bold mb-1 border-b border-white/20 pb-0.5 uppercase tracking-wider">Reason</div>
+                    <div style={{ backgroundColor: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }} className="text-[10px] px-2 py-1.5 rounded shadow-xl whitespace-normal min-w-[120px] max-w-[200px] leading-tight text-center">
+                        <div className="font-bold mb-1 border-b pb-0.5 uppercase tracking-wider" style={{ borderColor: 'var(--border)' }}>Reason</div>
                         {reason}
-                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-slate-900" />
+                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-[5px] border-transparent" style={{ borderTopColor: 'var(--border)' }} />
                     </div>
                 </div>
             )}

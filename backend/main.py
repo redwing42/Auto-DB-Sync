@@ -1058,10 +1058,14 @@ async def get_stats(
         "active_routes": 0,
         "total_locations": 0,
         "total_landing_zones": 0,
+        "total_networks": 0,
         "routes_per_network": [],
         "lz_per_location": [],
         "submission_statuses": {},
         "recent_approved": [],
+        "db_last_sync_at": None,
+        "db_last_sync_by": None,
+        "excel_last_modified_at": None,
     }
 
     # ── flights.db stats ─────────────────────────────────────────────────
@@ -1074,7 +1078,15 @@ async def get_stats(
             # Total & active routes
             row = conn.execute("SELECT COUNT(*) as c FROM flight_routes").fetchone()
             result["total_routes"] = row["c"] if row else 0
-            result["active_routes"] = result["total_routes"]  # assume all active
+
+            # Active routes (status=1 or status='true')
+            try:
+                row_active = conn.execute(
+                    "SELECT COUNT(*) as c FROM flight_routes WHERE status=1 OR status='true'"
+                ).fetchone()
+                result["active_routes"] = row_active["c"] if row_active else result["total_routes"]
+            except Exception:
+                result["active_routes"] = result["total_routes"]
 
             row = conn.execute("SELECT COUNT(*) as c FROM locations").fetchone()
             result["total_locations"] = row["c"] if row else 0
@@ -1082,15 +1094,30 @@ async def get_stats(
             row = conn.execute("SELECT COUNT(*) as c FROM landing_zones").fetchone()
             result["total_landing_zones"] = row["c"] if row else 0
 
-            # Routes per network
+            # Total networks
+            try:
+                row_net = conn.execute("SELECT COUNT(*) as c FROM networks").fetchone()
+                result["total_networks"] = row_net["c"] if row_net else 0
+            except Exception:
+                pass
+
+            # Routes per network with active/inactive split
             try:
                 rows = conn.execute(
-                    "SELECT n.name, COUNT(fr.id) as cnt "
+                    "SELECT n.name, "
+                    "COUNT(fr.id) as cnt, "
+                    "SUM(CASE WHEN fr.status=1 OR fr.status='true' THEN 1 ELSE 0 END) as active_cnt "
                     "FROM flight_routes fr JOIN networks n ON fr.network_id = n.id "
                     "GROUP BY n.name ORDER BY cnt DESC"
                 ).fetchall()
                 result["routes_per_network"] = [
-                    {"name": r["name"], "count": r["cnt"]} for r in rows
+                    {
+                        "name": r["name"],
+                        "count": r["cnt"],
+                        "active": r["active_cnt"] if r["active_cnt"] else r["cnt"],
+                        "inactive": r["cnt"] - (r["active_cnt"] if r["active_cnt"] else r["cnt"]),
+                    }
+                    for r in rows
                 ]
             except Exception:
                 pass
@@ -1112,6 +1139,17 @@ async def get_stats(
         except Exception as e:
             logger.warning("Stats: failed to read flights.db: %s", e)
 
+    # ── Excel last modified ──────────────────────────────────────────────
+    import os
+    excel_path = settings.instance_dir / "Flight_data_updated.xlsx"
+    if excel_path.exists():
+        try:
+            mtime = os.path.getmtime(str(excel_path))
+            from datetime import datetime, timezone
+            result["excel_last_modified_at"] = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+
     # ── submissions.db stats ─────────────────────────────────────────────
     try:
         subs = store.list_submissions()
@@ -1128,6 +1166,13 @@ async def get_stats(
                 })
         result["submission_statuses"] = status_counts
         result["recent_approved"] = recent
+
+        # Find last PIPELINE_COMPLETE audit for db_last_sync
+        for s in subs:
+            if s.workflow_state == "PIPELINE_COMPLETE":
+                result["db_last_sync_at"] = s.updated_at or s.created_at
+                result["db_last_sync_by"] = getattr(s, 'approved_by_name', None) or getattr(s, 'db_updated_by_name', None)
+                break
     except Exception as e:
         logger.warning("Stats: failed to read submissions: %s", e)
 

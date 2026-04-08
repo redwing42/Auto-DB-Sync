@@ -169,6 +169,39 @@ export default function InboxPage() {
                 <button className="btn" onClick={() => fetchSubmissions()}>↻ Refresh</button>
             </div>
 
+            <div className="tabs">
+                <button
+                    className={`tab ${!statusFilter ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions')}
+                >
+                    All
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'pending' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=pending')}
+                >
+                    Pending
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'approved' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=approved')}
+                >
+                    Approved
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'rejected' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=rejected')}
+                >
+                    Rejected
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'failed' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=failed')}
+                >
+                    Failed
+                </button>
+            </div>
+
             {error && <div className="banner banner-error">⚠ {error}</div>}
 
             {filtered.length === 0 ? (

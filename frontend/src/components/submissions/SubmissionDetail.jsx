@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Lock } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Lock, RefreshCw } from 'lucide-react';
 import { api } from '../../api/api';
 import StatusBadge from '../shared/StatusBadge';
 import WaypointViewerTab from '../tabs/WaypointViewerTab';
@@ -312,13 +312,14 @@ export default function SubmissionDetail() {
                         </div>
                         <RequiresRole role="operator">
                             <button
-                                className="btn btn-sm btn-caution"
+                                className="btn btn-sm btn-caution flex items-center gap-2"
                                 onClick={() => {
                                     const path = sub.payload?.is_update ? '/submit/update' : '/submit/new';
                                     navigate(`${path}?resubmit=${sub.id}`);
                                 }}
                             >
-                                Resubmit with Changes
+                                <RefreshCw size={14} />
+                                Resubmit Data
                             </button>
                         </RequiresRole>
                     </div>
