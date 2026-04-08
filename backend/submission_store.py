@@ -11,6 +11,7 @@ from typing import Any, List, Optional
 
 from models import (
     DownloadStatus,
+    DraftResponse,
     SubmissionPayload,
     SubmissionResponse,
     SubmissionStatus,
@@ -81,6 +82,10 @@ class SubmissionStore:
             "db_updated_by_name TEXT",
             "viewed_by_name TEXT",
             "serial_id INTEGER",
+            # Phase 4 columns
+            "submission_type TEXT DEFAULT 'NEW_ROUTE'",
+            "changed_fields TEXT",
+            "parent_submission_id TEXT",
         ]
         for col in migration_columns:
             try:
@@ -107,6 +112,27 @@ class SubmissionStore:
         """)
 
         conn.commit()
+
+        # ── Drafts table ─────────────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS drafts (
+                id TEXT PRIMARY KEY,
+                submission_type TEXT NOT NULL DEFAULT 'NEW_ROUTE',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                created_by_uid TEXT NOT NULL,
+                parent_submission_id TEXT,
+                label TEXT DEFAULT 'Untitled Draft',
+                deleted_at TEXT,
+                deleted_by_uid TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_drafts_user
+            ON drafts(created_by_uid)
+        """)
+        conn.commit()
         conn.close()
 
     # ── CRUD ─────────────────────────────────────────────────────────────
@@ -119,6 +145,9 @@ class SubmissionStore:
         source: str = "webhook",
         submitted_by_name: Optional[str] = None,
         submitted_by_role: Optional[str] = None,
+        submission_type: str = "NEW_ROUTE",
+        changed_fields: Optional[str] = None,
+        parent_submission_id: Optional[str] = None,
     ) -> str:
         submission_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -128,8 +157,11 @@ class SubmissionStore:
                (id, payload, status, download_status, files_downloaded,
                 waypoint_verified, id_resolution_reviewed, created_at,
                 created_by_uid, source, workflow_state,
-                submitted_by_uid, submitted_by_name, submitted_by_role, serial_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(serial_id), 0) + 1 FROM submissions))""",
+                submitted_by_uid, submitted_by_name, submitted_by_role,
+                submission_type, changed_fields, parent_submission_id,
+                serial_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       (SELECT COALESCE(MAX(serial_id), 0) + 1 FROM submissions))""",
             (
                 submission_id,
                 payload.model_dump_json(),
@@ -145,6 +177,9 @@ class SubmissionStore:
                 user_uid,
                 submitted_by_name,
                 submitted_by_role,
+                submission_type,
+                changed_fields,
+                parent_submission_id,
             ),
         )
         conn.commit()
@@ -393,6 +428,15 @@ class SubmissionStore:
             except (IndexError, KeyError):
                 return default
 
+        # Parse changed_fields JSON if present
+        changed_fields_raw = _safe_get("changed_fields")
+        changed_fields = None
+        if changed_fields_raw:
+            try:
+                changed_fields = json.loads(changed_fields_raw)
+            except (json.JSONDecodeError, TypeError):
+                changed_fields = None
+
         return SubmissionResponse(
             id=row["id"],
             payload=SubmissionPayload.model_validate_json(row["payload"]),
@@ -419,4 +463,117 @@ class SubmissionStore:
             db_updated_by_name=_safe_get("db_updated_by_name"),
             viewed_by_name=_safe_get("viewed_by_name"),
             human_id=f"RW-{_safe_get('serial_id', '???')}",
+            # Phase 4 fields
+            submission_type=_safe_get("submission_type", "NEW_ROUTE"),
+            changed_fields=changed_fields,
+            parent_submission_id=_safe_get("parent_submission_id"),
+        )
+
+    # ── Draft CRUD ────────────────────────────────────────────────────────
+
+    def save_draft(
+        self,
+        user_uid: str,
+        payload_json: str,
+        submission_type: str = "NEW_ROUTE",
+        draft_id: Optional[str] = None,
+        parent_submission_id: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> str:
+        """Create or update a draft. Returns draft ID."""
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+
+        if draft_id:
+            # Update existing draft
+            conn.execute(
+                """UPDATE drafts SET payload_json = ?, updated_at = ?,
+                   submission_type = ?, label = ? WHERE id = ? AND created_by_uid = ?""",
+                (payload_json, now, submission_type,
+                 label or "Untitled Draft", draft_id, user_uid),
+            )
+        else:
+            draft_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO drafts
+                   (id, submission_type, payload_json, created_at, created_by_uid,
+                    parent_submission_id, label)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (draft_id, submission_type, payload_json, now, user_uid,
+                 parent_submission_id, label or "Untitled Draft"),
+            )
+
+        conn.commit()
+        conn.close()
+        return draft_id
+
+    def get_drafts_by_user(self, user_uid: str) -> List[DraftResponse]:
+        """Return all non-deleted drafts for a user."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM drafts
+               WHERE created_by_uid = ? AND deleted_at IS NULL
+               ORDER BY COALESCE(updated_at, created_at) DESC""",
+            (user_uid,),
+        ).fetchall()
+        conn.close()
+        return [self._row_to_draft(r) for r in rows]
+
+    def get_draft(self, draft_id: str) -> Optional[DraftResponse]:
+        """Return a single draft by ID."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM drafts WHERE id = ? AND deleted_at IS NULL",
+            (draft_id,),
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return self._row_to_draft(row)
+
+    def delete_draft(self, draft_id: str, user_uid: str) -> bool:
+        """Soft-delete a draft."""
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE drafts SET deleted_at = ?, deleted_by_uid = ? WHERE id = ?",
+            (now, user_uid, draft_id),
+        )
+        conn.commit()
+        affected = conn.total_changes
+        conn.close()
+        return affected > 0
+
+    def soft_delete_stale_drafts(self, days: int = 7) -> int:
+        """Soft-delete drafts older than N days."""
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """UPDATE drafts SET deleted_at = ?, deleted_by_uid = 'system'
+               WHERE deleted_at IS NULL
+               AND COALESCE(updated_at, created_at) < ?""",
+            (datetime.now(timezone.utc).isoformat(), cutoff),
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected
+
+    def _row_to_draft(self, row: sqlite3.Row) -> DraftResponse:
+        def _safe(key, default=None):
+            try:
+                val = row[key]
+                return val if val is not None else default
+            except (IndexError, KeyError):
+                return default
+        return DraftResponse(
+            id=row["id"],
+            submission_type=_safe("submission_type", "NEW_ROUTE"),
+            payload_json=row["payload_json"],
+            created_at=row["created_at"],
+            updated_at=_safe("updated_at"),
+            created_by_uid=row["created_by_uid"],
+            parent_submission_id=_safe("parent_submission_id"),
+            label=_safe("label", "Untitled Draft"),
         )

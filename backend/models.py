@@ -11,6 +11,11 @@ from pydantic import BaseModel, Field
 
 # ── Enums ────────────────────────────────────────────────────────────────────
 
+class SubmissionType(str, enum.Enum):
+    NEW_ROUTE = "NEW_ROUTE"
+    UPDATE = "UPDATE"
+
+
 class SubmissionStatus(str, enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
@@ -35,6 +40,8 @@ class WorkflowState(str, enum.Enum):
 
 class AuditActionType(str, enum.Enum):
     SUBMISSION_CREATED = "SUBMISSION_CREATED"
+    DRAFT_SAVED = "DRAFT_SAVED"
+    DRAFT_DELETED = "DRAFT_DELETED"
     GATE1_PASSED = "GATE1_PASSED"
     GATE1_FAILED = "GATE1_FAILED"
     GATE2_CONFIRMED = "GATE2_CONFIRMED"
@@ -84,6 +91,16 @@ class SubmissionPayload(BaseModel):
     is_update: bool = False
     update_for_route_id: Optional[int] = None
 
+
+class UpdateSubmissionPayload(SubmissionPayload):
+    """Extended payload for route update submissions with field-level diffing."""
+    submission_type: str = "UPDATE"
+    changed_fields: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description='{ "field_name": { "old": "val1", "new": "val2" } }',
+    )
+    parent_submission_id: Optional[str] = None
+
 # ── Submission Response ──────────────────────────────────────────────────────
 
 class SubmissionResponse(BaseModel):
@@ -112,6 +129,23 @@ class SubmissionResponse(BaseModel):
     db_updated_by_name: Optional[str] = None
     human_id: str = ""
     viewed_by_name: Optional[str] = None
+    # Phase 4 fields
+    submission_type: str = "NEW_ROUTE"
+    changed_fields: Optional[Dict[str, Dict[str, Any]]] = None
+    parent_submission_id: Optional[str] = None
+
+
+# ── Draft Response ───────────────────────────────────────────────────────────
+
+class DraftResponse(BaseModel):
+    id: str
+    submission_type: str = "NEW_ROUTE"
+    payload_json: str  # Serialized partial payload
+    created_at: str
+    updated_at: Optional[str] = None
+    created_by_uid: str
+    parent_submission_id: Optional[str] = None
+    label: str = "Untitled Draft"
 
 
 # ── Status Update ────────────────────────────────────────────────────────────

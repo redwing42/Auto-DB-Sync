@@ -2283,3 +2283,315 @@ th.col-auto {
 .state-pipeline_complete { background: #D1FAE5; color: #059669; }
 .state-pipeline_failed { background: #FEE2E2; color: #DC2626; }
 .state-rejected { background: #FEE2E2; color: #DC2626; text-decoration: line-through; }
+
+/* ── Phase 4: Diff Display ───────────────────────────────────────────────── */
+.diff-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.diff-row + .diff-row {
+  border-top: 1px solid var(--border);
+}
+
+.diff-label {
+  min-width: 160px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diff-value {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.diff-unchanged {
+  color: var(--text-muted);
+}
+
+.diff-changed {
+  background: #FFFBEB;
+  border-left: 3px solid #F59E0B;
+}
+
+.diff-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.diff-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.diff-cell-tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.diff-cell-old .diff-cell-tag { color: var(--danger); }
+.diff-cell-new .diff-cell-tag { color: var(--success); }
+
+.diff-old {
+  color: #DC2626;
+  text-decoration: line-through;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
+.diff-new {
+  color: #16A34A;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
+.diff-arrow {
+  color: var(--text-muted);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.diff-delta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #EFF6FF;
+  color: #2563EB;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Compact inline mode */
+.diff-compact {
+  padding: 4px 8px;
+}
+
+.diff-value-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+/* Diff summary card */
+.diff-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: var(--surface);
+}
+
+.diff-summary-empty {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.diff-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+
+.diff-summary-icon {
+  font-size: 16px;
+  color: #F59E0B;
+}
+
+.diff-summary-count {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diff-summary-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Phase 4: Draft Cards ────────────────────────────────────────────────── */
+.draft-section {
+  margin-bottom: 32px;
+}
+
+.draft-section-title {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.draft-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.draft-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+}
+
+.draft-card-label {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.draft-card-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft-card-type {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #EFF6FF;
+  color: #2563EB;
+}
+
+.draft-card-type.update {
+  background: #FFFBEB;
+  color: #D97706;
+}
+
+.draft-card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  opacity: 0;
+  transition: all 0.15s;
+}
+
+.draft-card:hover .draft-card-delete {
+  opacity: 1;
+}
+
+.draft-card-delete:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* ── Phase 4: Auto-save Indicator ────────────────────────────────────────── */
+.draft-save-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--surface);
+  transition: all 0.3s ease;
+}
+
+.draft-save-indicator.saving {
+  color: var(--primary);
+}
+
+.draft-save-indicator.saved {
+  color: var(--success);
+}
+
+.draft-save-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.draft-save-indicator.saving .draft-save-dot {
+  background: var(--primary);
+  animation: draft-pulse 1s ease infinite;
+}
+
+.draft-save-indicator.saved .draft-save-dot {
+  background: var(--success);
+}
+
+@keyframes draft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Phase 4: Submission Type Badge ──────────────────────────────────────── */
+.submission-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.submission-type-badge.new-route {
+  background: #EFF6FF;
+  color: #2563EB;
+}
+
+.submission-type-badge.update {
+  background: #FFFBEB;
+  color: #D97706;
+}

@@ -10,6 +10,18 @@ const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 import { auth } from '../firebase';
 
+/** Headers for manual fetch calls that take a pre-fetched token. */
+const jsonHeaders = (token) => ({
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+});
+
+/** Extract error detail from a non-ok Response. */
+const apiError = async (response) => {
+    const body = await response.json().catch(() => ({ detail: response.statusText }));
+    return new Error(body.detail || `HTTP ${response.status}`);
+};
+
 const authFetch = async (url, options = {}) => {
     let token = null;
     try {
@@ -20,7 +32,6 @@ const authFetch = async (url, options = {}) => {
 
     const headers = {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
         ...options.headers,
         ...(token ? { Authorization: `Bearer ${token}` } : {})
     };
@@ -159,7 +170,6 @@ export const api = {
         const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/waypoints/parse`, {
             method: 'POST',
             headers: {
-                'ngrok-skip-browser-warning': 'true',
                 ...(token ? { Authorization: `Bearer ${token}` } : {}),
             },
             body: formData,
@@ -168,6 +178,53 @@ export const api = {
             const err = await response.json().catch(() => ({ detail: response.statusText }));
             throw new Error(err.detail || `HTTP ${response.status}`);
         }
+        return response.json();
+    },
+
+    // ── Phase 4: Draft CRUD ─────────────────────────────────────────────
+
+    async saveDraft(draftData, token) {
+        const response = await fetch(`${API_BASE}/drafts`, {
+            method: 'POST',
+            headers: jsonHeaders(token),
+            body: JSON.stringify(draftData),
+        });
+        if (!response.ok) throw await apiError(response);
+        return response.json();
+    },
+
+    async listDrafts(token) {
+        const response = await fetch(`${API_BASE}/drafts`, {
+            headers: jsonHeaders(token),
+        });
+        if (!response.ok) throw await apiError(response);
+        return response.json();
+    },
+
+    async getDraft(draftId, token) {
+        const response = await fetch(`${API_BASE}/drafts/${draftId}`, {
+            headers: jsonHeaders(token),
+        });
+        if (!response.ok) throw await apiError(response);
+        return response.json();
+    },
+
+    async deleteDraft(draftId, token) {
+        const response = await fetch(`${API_BASE}/drafts/${draftId}`, {
+            method: 'DELETE',
+            headers: jsonHeaders(token),
+        });
+        if (!response.ok) throw await apiError(response);
+        return response.json();
+    },
+
+    // ── Phase 4: Resubmission ───────────────────────────────────────────
+
+    async getResubmitData(submissionId, token) {
+        const response = await fetch(`${API_BASE}/submissions/${submissionId}/resubmit-data`, {
+            headers: jsonHeaders(token),
+        });
+        if (!response.ok) throw await apiError(response);
         return response.json();
     },
 };

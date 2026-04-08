@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
     ArrowLeft, ArrowRight, Send, AlertTriangle, CheckCircle,
     Loader2, Upload, FileCheck, XCircle
 } from 'lucide-react';
 import { api } from '../../api/api';
+import { auth } from '../../firebase';
 import { useToast } from '../shared/Toast';
 import StepperProgress from './StepperProgress';
+import DraftSaveIndicator from './DraftSaveIndicator';
+import { useDraftAutoSave } from '../../hooks/useDraftAutoSave';
 import { validateDriveLink, validateDirections, validateFilename } from './submitValidation';
 
 const STEPS = ['Network', 'Upload & Match', 'Drive Links', 'Review & Submit'];
@@ -56,11 +59,19 @@ function bearing(lat1, lng1, lat2, lng2) {
 
 export default function NewRouteStepper() {
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
     const addToast = useToast();
     const fileInputRef = useRef(null);
+    const hydratedRef = useRef(false);
 
     const [step, setStep] = useState(1);
     const [data, setData] = useState(INITIAL_DATA);
+
+    // Phase 4: Draft & resubmission params
+    const draftIdParam = searchParams.get('draft');
+    const resubmitIdParam = searchParams.get('resubmit');
+    const { draftId, saving, lastSaved, saveDraft, saveNow, clearDraft, hydrate } =
+        useDraftAutoSave('NEW_ROUTE', resubmitIdParam);
 
     // Step 1 — Networks
     const [networks, setNetworks] = useState([]);
@@ -89,12 +100,47 @@ export default function NewRouteStepper() {
 
     const [stepErrors, setStepErrors] = useState([]);
 
+    // Phase 4: Hydrate from draft or resubmission
+    useEffect(() => {
+        if (hydratedRef.current) return;
+        (async () => {
+            try {
+                const token = await auth.currentUser?.getIdToken();
+                if (!token) return;
+                if (draftIdParam) {
+                    const draft = await api.getDraft(draftIdParam, token);
+                    const payload = JSON.parse(draft.payload_json);
+                    setData(prev => ({ ...prev, ...payload }));
+                    hydrate(draftIdParam);
+                    if (payload.network_name) {
+                        // Will be matched once networks load
+                    }
+                    addToast('Draft restored');
+                } else if (resubmitIdParam) {
+                    const resub = await api.getResubmitData(resubmitIdParam, token);
+                    setData(prev => ({ ...prev, ...resub.payload }));
+                    addToast(`Resubmitting — previously rejected: ${resub.rejection_reason || 'No reason'}`);
+                }
+            } catch (err) {
+                console.warn('Hydration failed:', err);
+            } finally {
+                hydratedRef.current = true;
+            }
+        })();
+    }, [draftIdParam, resubmitIdParam]);
+
     useEffect(() => {
         api.getNetworks()
             .then(setNetworks)
             .catch(e => addToast(`Failed to load networks: ${e.message}`))
             .finally(() => setLoadingNetworks(false));
     }, []);
+
+    // Phase 4: Auto-save draft on data changes (debounced)
+    useEffect(() => {
+        if (!hydratedRef.current) return; // Don't save during hydration
+        saveDraft(data);
+    }, [data]);
 
     const update = (field, value) => setData(prev => ({ ...prev, [field]: value }));
 
@@ -294,12 +340,15 @@ export default function NewRouteStepper() {
     const handleNext = () => {
         if (validateCurrentStep()) {
             setStepErrors([]);
+            // Phase 4: Immediate save on step transition
+            saveNow(data);
             setStep(s => s + 1);
         }
     };
 
     const handleBack = () => {
         setStepErrors([]);
+        saveNow(data);
         setStep(s => s - 1);
     };
 
@@ -307,6 +356,8 @@ export default function NewRouteStepper() {
         setSubmitting(true);
         try {
             const result = await api.createSubmission(buildPayload());
+            // Phase 4: Clear draft on successful submission
+            await clearDraft();
             addToast(`Submission created: #${result.submission_id.slice(0, 8)}`);
             navigate('/');
         } catch (e) {
@@ -331,7 +382,10 @@ export default function NewRouteStepper() {
                 <ArrowLeft size={14} /> Back
             </button>
 
-            <div className="page-header"><h1>New Route Submission</h1></div>
+            <div className="page-header" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <h1>New Route Submission</h1>
+                <DraftSaveIndicator saving={saving} lastSaved={lastSaved} />
+            </div>
             <StepperProgress steps={STEPS} currentStep={step} />
 
             {stepErrors.length > 0 && (

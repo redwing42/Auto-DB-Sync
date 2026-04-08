@@ -44,7 +44,7 @@ async def get_current_user(authorization: str = Header(None)):
         'uid':          decoded['uid'],
         'email':        decoded.get('email'),
         'display_name': display_name or decoded.get('email'),
-        'role':         role
+        'role':         role.lower() if role else 'operator'
     }
 
 def require_role(minimum_role: str):

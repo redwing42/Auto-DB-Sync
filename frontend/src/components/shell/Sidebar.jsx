@@ -29,7 +29,14 @@ export default function Sidebar({ pendingCount = 0 }) {
     const navigate = useNavigate();
     const { user } = useAuth();
 
-    const canSubmit = user && (user.role === 'operator' || user.role === 'admin');
+    const ROLE_LEVELS = {
+        'operator': 1,
+        'reviewer': 2,
+        'sde': 3,
+        'admin': 4
+    };
+    const userRole = user?.role || 'operator';
+    const canSubmit = (ROLE_LEVELS[userRole] || 0) >= 1;
 
     const isActive = (item) => {
         if (item.filter !== undefined) {

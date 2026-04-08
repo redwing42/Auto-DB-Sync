@@ -13,7 +13,7 @@ export default function RequiresRole({ role, children, fallback = null }) {
 
     if (!user) return fallback;
 
-    const userLevel = ROLE_HIERARCHY[user.role] ?? 0;
+    const userLevel = ROLE_HIERARCHY[user.role?.toLowerCase()] ?? 0;
     const requiredLevel = ROLE_HIERARCHY[role] ?? 99;
 
     if (userLevel >= requiredLevel) return children;

@@ -355,6 +355,19 @@ export default function SubmissionDetail() {
                                 </RequiresRole>
                             </>
                         )}
+                        {sub.status === 'rejected' && (
+                            <RequiresRole role="operator">
+                                <button
+                                    className="btn btn-sm btn-primary"
+                                    onClick={() => {
+                                        const path = sub.payload?.is_update ? '/submit/update' : '/submit/new';
+                                        navigate(`${path}?resubmit=${sub.id}`);
+                                    }}
+                                >
+                                    Resubmit Data
+                                </button>
+                            </RequiresRole>
+                        )}
                     </div>
                 </div>
 
