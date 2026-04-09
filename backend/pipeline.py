@@ -341,6 +341,13 @@ def run_approval_pipeline(
         # ── Success ─────────────────────────────────────────────────────
         backup_path.unlink(missing_ok=True)
 
+        # Mark submission approved for UI list/status chips
+        store.update_status(
+            submission_id,
+            SubmissionStatus.APPROVED,
+            user_uid=user_uid,
+        )
+
         store.update_workflow_state(
             submission_id, WorkflowState.PIPELINE_COMPLETE,
             user_uid=user_uid, performer_name=user_name, branch_name=branch_name,

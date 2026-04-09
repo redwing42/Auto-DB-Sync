@@ -231,4 +231,61 @@ export const api = {
     // ── Phase 5: Network Map & Transparency ──────────────────────────────
     getTeamActivity: () => authFetch('/stats/team-activity'),
     getNetworkMap: () => authFetch('/network-map'),
+
+    // ── Route Tracker ───────────────────────────────────────────────────
+    getRouteTracker: (params) => {
+        const query = new URLSearchParams();
+        if (params?.event_type) query.set('event_type', params.event_type);
+        if (params?.network_id) query.set('network_id', String(params.network_id));
+        if (params?.days != null) query.set('days', String(params.days));
+        if (params?.search) query.set('search', params.search);
+        const qs = query.toString();
+        return authFetch(qs ? `/route-tracker?${qs}` : '/route-tracker');
+    },
+
+    // ── Admin Panel ─────────────────────────────────────────────────────
+    getAdminUsers: () => authFetch('/admin/users'),
+    updateAdminUser: (uid, updates) => authFetch(`/admin/users/${uid}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates),
+    }),
+    getFeatureVisibility: () => authFetch('/admin/feature-visibility'),
+    updateFeatureVisibility: (featureId, updates) => authFetch(`/admin/feature-visibility/${featureId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates),
+    }),
+    getAdminAuditLog: (params) => {
+        const query = new URLSearchParams();
+        if (params?.page) query.set('page', String(params.page));
+        if (params?.limit) query.set('limit', String(params.limit));
+        if (params?.action_type) query.set('action_type', params.action_type);
+        if (params?.uid) query.set('uid', params.uid);
+        if (params?.days != null) query.set('days', String(params.days));
+        const qs = query.toString();
+        return authFetch(qs ? `/admin/audit-log?${qs}` : '/admin/audit-log');
+    },
+    exportAdminAuditLog: async () => {
+        let token = null;
+        try {
+            token = await auth.currentUser?.getIdToken(false);
+        } catch (err) {
+            console.warn('Could not get auth token for export:', err);
+        }
+
+        const response = await fetch(`${import.meta.env.VITE_API_URL || '/api'}/admin/audit-log/export`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+
+        if (!response.ok) throw new Error('Export failed');
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+    },
 };

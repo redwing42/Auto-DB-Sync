@@ -378,7 +378,7 @@ export default function UpdateRouteStepper() {
         try {
             const result = await api.createSubmission(buildPayload());
             await clearDraft();
-            addToast(`Update submitted: #${result.submission_id.slice(0, 8)}`);
+            addToast(`Update submitted: ${result.human_id || `#${result.submission_id.slice(0, 8)}`}`);
             navigate('/');
         } catch (e) {
             addToast(`Submit failed: ${e.message}`);

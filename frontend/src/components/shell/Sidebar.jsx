@@ -12,7 +12,9 @@ import {
     Clock,
     CheckCircle,
     XCircle,
-    AlertTriangle
+    AlertTriangle,
+    GitMerge,
+    ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -37,8 +39,15 @@ const NAV_ITEMS = [
     {
         section: 'Tools',
         items: [
-            { label: 'Database Health', path: '/stats', icon: BarChart3 },
-            { label: 'LZ Management', path: '/lz-management', icon: MapPin },
+            { label: 'Database Health', path: '/stats', icon: BarChart3, minRole: 'operator' },
+            { label: 'LZ Management', path: '/lz-management', icon: MapPin, minRole: 'reviewer' },
+            { label: 'Route Tracker', path: '/route-tracker', icon: GitMerge, minRole: 'sde' },
+        ],
+    },
+    {
+        section: 'Admin',
+        items: [
+            { label: 'Admin Panel', path: '/admin', icon: ShieldCheck, minRole: 'admin' },
         ],
     },
 ];
@@ -89,25 +98,36 @@ export default function Sidebar({ pendingCount = 0, collapsed, setCollapsed }) {
                 {NAV_ITEMS.map((group) => (
                     <div key={group.section} className="sidebar-section">
                         {!collapsed && <div className="sidebar-section-title">{group.section}</div>}
-                        {group.items.map((item) => (
-                            <a
-                                key={item.label}
-                                className={`sidebar-item ${isActive(item) ? 'active' : ''}`}
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    navigate(item.path);
-                                }}
-                                href={item.path}
-                                title={collapsed ? item.label : ""}
-                                style={{ position: 'relative' }}
-                            >
-                                {item.icon && <item.icon size={18} style={item.iconColor ? { color: item.iconColor } : undefined} />}
-                                <span>{item.label}</span>
-                                {item.label === 'Pending' && pendingCount > 0 && (
-                                    <span className="sidebar-badge">{pendingCount}</span>
-                                )}
-                            </a>
-                        ))}
+                        {group.items
+                            .filter((item) => {
+                                if (!item.minRole) return true;
+                                const required = ROLE_LEVELS[item.minRole] || 0;
+                                return (ROLE_LEVELS[userRole] || 0) >= required;
+                            })
+                            .map((item) => (
+                                <a
+                                    key={item.label}
+                                    className={`sidebar-item ${isActive(item) ? 'active' : ''}`}
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        navigate(item.path);
+                                    }}
+                                    href={item.path}
+                                    title={collapsed ? item.label : ""}
+                                    style={{ position: 'relative' }}
+                                >
+                                    {item.icon && (
+                                        <item.icon
+                                            size={18}
+                                            style={item.iconColor ? { color: item.iconColor } : undefined}
+                                        />
+                                    )}
+                                    <span>{item.label}</span>
+                                    {item.label === 'Pending' && pendingCount > 0 && (
+                                        <span className="sidebar-badge">{pendingCount}</span>
+                                    )}
+                                </a>
+                            ))}
                     </div>
                 ))}
             </div>

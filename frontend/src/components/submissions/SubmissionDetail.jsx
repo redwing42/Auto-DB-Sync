@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Lock, RefreshCw } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Lock, RefreshCw, X, Shield, History, Globe, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
 import { api } from '../../api/api';
 import StatusBadge from '../shared/StatusBadge';
 import WaypointViewerTab from '../tabs/WaypointViewerTab';
@@ -40,14 +40,20 @@ const WORKFLOW_LABELS = {
 
 function WorkflowBadge({ state }) {
     const label = WORKFLOW_LABELS[state] || state;
-    const className = `workflow-badge state-${state?.toLowerCase()}`;
-    return <span className={className}>{label}</span>;
+    const colors = {
+        'SUBMITTED': 'bg-blue-500/10 text-blue-500 border-blue-500/20',
+        'WAYPOINT_VERIFIED': 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+        'ID_RESOLUTION_CONFIRMED': 'bg-purple-500/10 text-purple-500 border-purple-500/20',
+        'PIPELINE_RUNNING': 'bg-primary/10 text-primary border-primary/20 animate-pulse',
+        'PIPELINE_COMPLETE': 'bg-green-500/10 text-green-500 border-green-500/20',
+        'PIPELINE_FAILED': 'bg-danger/10 text-danger border-danger/20',
+        'REJECTED': 'bg-danger/10 text-danger border-danger/20'
+    };
+    const colorClass = colors[state] || 'bg-text-muted/10 text-text-muted border-text-muted/20';
+    return <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${colorClass}`}>{label}</span>;
 }
 
-export default function SubmissionDetail() {
-    const { id } = useParams();
-    const navigate = useNavigate();
-    const [searchParams] = useSearchParams();
+export function SubmissionDetailContent({ submissionId, onBack }) {
     const [sub, setSub] = useState(null);
     const [preview, setPreview] = useState(null);
     const [waypoints, setWaypoints] = useState(null);
@@ -58,31 +64,23 @@ export default function SubmissionDetail() {
     const [approving, setApproving] = useState(false);
     const [rejectReason, setRejectReason] = useState('');
     const [showRejectModal, setShowRejectModal] = useState(false);
-
-    // Confirmation storage for the approve call
     const [confirmations, setConfirmations] = useState({});
-
-    // Gate 1 Checkboxes (Local State)
-    const [check1, setCheck1] = useState(false);
-    const [check2, setCheck2] = useState(false);
-    const [check3, setCheck3] = useState(false);
-    const [verifying, setVerifying] = useState(false);
 
     const loadSubmission = async (silent = false) => {
         if (!silent) setLoading(true);
         setError(null);
         try {
-            const data = await api.getSubmission(id);
+            const data = await api.getSubmission(submissionId);
             setSub(data);
             try {
-                const previewData = await api.getResolvePreview(id);
+                const previewData = await api.getResolvePreview(submissionId);
                 setPreview(previewData);
             } catch (err) {
                 console.error("Failed to load resolve preview:", err);
             }
             if (data.download_status === 'completed') {
                 try {
-                    const wpData = await api.getWaypointData(id);
+                    const wpData = await api.getWaypointData(submissionId);
                     setWaypoints(wpData);
                 } catch (err) {
                     console.error("Failed to load waypoint data:", err);
@@ -104,9 +102,6 @@ export default function SubmissionDetail() {
                         takeoff_direction: od.takeoff_direction,
                         approach_direction: od.approach_direction,
                         mission_filename: od.mission_filename || '',
-                        mission_drive_link: '',
-                        elevation_image_drive_link: '',
-                        route_image_drive_link: '',
                     });
                 } catch (err) {
                     console.error("Failed to load original route for diff:", err);
@@ -119,60 +114,21 @@ export default function SubmissionDetail() {
         }
     };
 
-    useEffect(() => { loadSubmission(); }, [id]);
-
-    // Respond to ?tab= query param from nav buttons
-    useEffect(() => {
-        const tab = searchParams.get('tab');
-        if (tab === 'files') setActiveTab(1);
-        else if (tab === 'resolution') setActiveTab(2);
-    }, [searchParams]);
-
-    useEffect(() => {
-        if (sub && sub.payload.is_update && activeTab === 0 && !searchParams.get('tab')) {
-            setActiveTab(-1);
-        }
-    }, [sub, searchParams]);
-
-    if (loading) return <div className="loading-state">Loading submission...</div>;
-    if (!sub) return <div className="banner banner-error">Submission not found.</div>;
-
-    const p = sub.payload;
-    const waypointVerified = sub.waypoint_verified;
-    const idResolutionReviewed = sub.id_resolution_reviewed;
-
-    // Approve enabled ONLY when BOTH gates pass
-    const canApprove = waypointVerified && idResolutionReviewed && sub.status === 'pending';
-
-    const approveTooltip = !waypointVerified
-        ? "Complete waypoint verification first"
-        : !idResolutionReviewed
-            ? "Review ID Resolution tab first"
-            : "";
+    useEffect(() => { loadSubmission(); }, [submissionId]);
 
     const handleApprove = async () => {
         setApproving(true);
         setError(null);
         try {
-            // BULLETPROOF CONFIRMATIONS: 
-            // If the user already passed the ID Resolution gate in the DB, 
-            // we auto-confirm all "new" entities to prevent 403 errors if local state was lost on reload.
-            const confirmed_new_entities = {
-                source_location: confirmations.source_location || false,
-                source_lz: confirmations.source_lz || false,
-                destination_location: confirmations.destination_location || false,
-                destination_lz: confirmations.destination_lz || false,
-            };
-
-            if (idResolutionReviewed && preview) {
+            const confirmed_new_entities = {};
+            if (preview) {
                 ['source_location', 'source_lz', 'destination_location', 'destination_lz'].forEach(key => {
                     if (preview[key]?.action === 'new') {
                         confirmed_new_entities[key] = true;
                     }
                 });
             }
-
-            await api.approveSubmission(id, confirmed_new_entities);
+            await api.approveSubmission(submissionId, confirmed_new_entities);
             await loadSubmission(true);
         } catch (err) {
             setError(err.message);
@@ -184,7 +140,7 @@ export default function SubmissionDetail() {
     const handleReject = async () => {
         if (rejectReason.length < 10) return;
         try {
-            await api.rejectSubmission(id, rejectReason);
+            await api.rejectSubmission(submissionId, rejectReason);
             setShowRejectModal(false);
             await loadSubmission(true);
         } catch (err) {
@@ -192,307 +148,271 @@ export default function SubmissionDetail() {
         }
     };
 
-    const handleMarkDuplicate = async () => {
-        if (!window.confirm('Are you sure you want to mark this as a duplicate?')) return;
+    const handleVerifyRoute = async () => {
         try {
-            await api.markAsDuplicate(id);
+            await api.updateReviewState(submissionId, { waypoint_verified: true });
             await loadSubmission(true);
         } catch (err) {
             setError(err.message);
         }
     };
 
-    const handleVerifyRoute = async () => {
-        setVerifying(true);
-        try {
-            await api.updateReviewState(id, { waypoint_verified: true });
-            await loadSubmission(true);
-        } catch (err) {
-            alert(err.message);
-        } finally {
-            setVerifying(false);
-        }
-    };
+    if (loading) return (
+        <div className="p-12 flex flex-col items-center justify-center gap-4 animate-pulse">
+            <div className="w-12 h-12 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+            <span className="text-xs font-bold text-text-muted uppercase tracking-widest">Synchronizing Metadata...</span>
+        </div>
+    );
+    
+    if (!sub) return <div className="p-8 text-center text-danger font-bold uppercase tracking-widest">Submission Not Found</div>;
 
-    // ID Resolution tab clickable ONLY when gate 1 passes
-    const idResolutionUnlocked = waypointVerified;
+    const p = sub.payload;
+    const waypointVerified = sub.waypoint_verified;
+    const idResolutionReviewed = sub.id_resolution_reviewed;
+    const isPipelineComplete = sub.workflow_state === 'PIPELINE_COMPLETE';
+    const isRejected = sub.status === 'rejected';
 
     return (
-        <div style={{ position: 'relative', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ flex: 1, paddingBottom: (activeTab === 0 && sub.status === 'pending') ? '80px' : '0' }}>
-                {/* Header */}
-                <div className="detail-header">
-                    <button className="btn btn-ghost" onClick={() => navigate('/')}>
-                        <ArrowLeft size={18} />
-                    </button>
-                    <h1>{sub.human_id || `Submission #${id.slice(0, 6)}`}</h1>
-                    <span style={{ margin: '0 8px' }}>—</span>
-                    <span style={{ fontWeight: 500 }}>{p.source_location_name} → {p.destination_location_name}</span>
-                    {p.is_update && (
-                        <span className="submission-type-badge update" style={{ marginLeft: '12px' }}>
-                            UPDATE
-                        </span>
+        <div className="flex flex-col gap-8 pb-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Header Section */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-border pb-8">
+                <div className="flex items-center gap-4">
+                    {onBack && (
+                        <button onClick={onBack} className="p-2.5 hover:bg-surface border border-border rounded-2xl transition-all shadow-sm group">
+                            <ArrowLeft size={20} className="text-text-muted group-hover:text-primary" />
+                        </button>
                     )}
-                    <div style={{ marginLeft: '12px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div>
+                        <div className="flex items-center gap-3 mb-1.5">
+                            <h1 className="text-2xl font-bold tracking-tighter text-text">RW-{sub.serial_id || sub.id.substring(0, 8)}</h1>
                             <StatusBadge status={sub.status} />
-                            {sub.status === 'approved' && sub.approved_by_name && (
-                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>by {sub.approved_by_name}</span>
-                            )}
+                            <WorkflowBadge state={sub.workflow_state} />
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {sub.workflow_state && <WorkflowBadge state={sub.workflow_state} />}
+                        <div className="flex items-center gap-3 text-xs font-medium text-text-muted">
+                            <span className="flex items-center gap-1.5"><Globe size={14} /> {p.network_name}</span>
+                            <span className="opacity-30">|</span>
+                            <span>{p.source_location_name} → {p.destination_location_name}</span>
                         </div>
                     </div>
                 </div>
-                <div className="detail-subtitle" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                    <span>{p.mission_filename}</span>
-                    <span style={{ opacity: 0.5 }}>•</span>
-                    <span>Received {new Date(sub.created_at).toLocaleString()}</span>
-                </div>
-                
-                {/* Participant Ribbon */}
-                <div className="participant-ribbon">
-                    {sub.submitted_by_name && (
-                        <div>
-                            <div className="ribbon-label">Submitted by</div>
-                            <div className="ribbon-value">{sub.submitted_by_name}</div>
-                        </div>
-                    )}
-                    {sub.viewed_by_name && (
-                        <div>
-                            <div className="ribbon-label">Viewed by</div>
-                            <div className="ribbon-value">{sub.viewed_by_name}</div>
-                        </div>
-                    )}
-                    {sub.reviewed_by_name && (
-                        <div>
-                            <div className="ribbon-label">Reviewed by</div>
-                            <div className="ribbon-value">{sub.reviewed_by_name}</div>
-                        </div>
-                    )}
-                    {sub.verified_by_name && (
-                        <div>
-                            <div className="ribbon-label">Verified by</div>
-                            <div className="ribbon-value">{sub.verified_by_name}</div>
-                        </div>
-                    )}
-                    {sub.validated_by_name && (
-                        <div>
-                            <div className="ribbon-label">Validated by</div>
-                            <div className="ribbon-value">{sub.validated_by_name}</div>
-                        </div>
-                    )}
-                    {sub.approved_by_name && (
-                        <div>
-                            <div className="ribbon-label">Approved by</div>
-                            <div className="ribbon-value">{sub.approved_by_name}</div>
-                        </div>
-                    )}
-                    {sub.db_updated_by_name && (
-                        <div>
-                            <div className="ribbon-label">DB Updated by</div>
-                            <div className="ribbon-value">{sub.db_updated_by_name}</div>
-                        </div>
-                    )}
-                </div>
 
-                {error && <div className="banner banner-error mb-16">⚠ {error}</div>}
-                {sub.error_detail && <div className="banner banner-error mb-16">Pipeline Error: {sub.error_detail}</div>}
-                {sub.status === 'failed' && <div className="banner banner-error mb-16">⚠ Mission execution failed. Check logs for details.</div>}
-                {sub.status === 'rejected' && (
-                    <div className="banner banner-caution mb-16 flex items-center justify-between">
-                        <div>
-                            <div className="font-bold flex items-center gap-2 mb-1">
-                                <span className="text-lg">⚠</span> Mission Rejected
-                            </div>
-                            <div className="text-sm opacity-90">
-                                <strong>Reason:</strong> {sub.status_metadata?.rejection_reason || 'No reason provided.'}
-                            </div>
-                        </div>
-                        <RequiresRole role="operator">
-                            <button
-                                className="btn btn-sm btn-caution flex items-center gap-2"
-                                onClick={() => {
-                                    const path = sub.payload?.is_update ? '/submit/update' : '/submit/new';
-                                    navigate(`${path}?resubmit=${sub.id}`);
-                                }}
-                            >
-                                <RefreshCw size={14} />
-                                Resubmit Data
-                            </button>
-                        </RequiresRole>
-                    </div>
-                )}
-
-                {/* Tab and Action Row */}
-                <div className="flex items-center justify-between border-bottom mb-24" style={{ borderBottom: '1px solid var(--border)' }}>
-                    <div className="tabs" style={{ borderBottom: 'none', marginBottom: 0 }}>
-                        {sub.payload.is_update && (
-                            <button
-                                className={`tab ${activeTab === -1 ? 'active' : ''}`}
-                                onClick={() => setActiveTab(-1)}
-                            >
-                                Changes
-                            </button>
-                        )}
-                        {TABS.map((tab, i) => {
-                            const isLocked = tab.locked && !idResolutionUnlocked;
-                            return (
-                                <button
-                                    key={tab.id}
-                                    className={`tab ${activeTab === i ? 'active' : ''}`}
-                                    onClick={() => !isLocked && setActiveTab(i)}
-                                    disabled={isLocked}
-                                    style={{
-                                        cursor: isLocked ? 'not-allowed' : 'pointer',
-                                        opacity: isLocked ? 0.5 : 1
-                                    }}
-                                >
-                                    {tab.name} {isLocked && <Lock size={12} style={{ marginLeft: 4 }} />}
-                                </button>
-                            );
-                        })}
-                    </div>
-
-                    <div className="flex gap-8 items-center" style={{ paddingBottom: '8px' }}>
-                        {sub.status === 'pending' && (
-                            <>
-                                <button className="btn btn-sm btn-ghost" onClick={handleMarkDuplicate}>
-                                    Duplicate
-                                </button>
-                                <button className="btn btn-sm btn-ghost" onClick={() => setShowRejectModal(true)} style={{ color: 'var(--danger)' }}>
-                                    Reject
-                                </button>
-                                <RequiresRole role="operator">
-                                    <button
-                                        className={`btn btn-sm ${canApprove ? 'btn-primary' : 'btn-secondary'}`}
-                                        disabled={!canApprove || approving}
-                                        onClick={handleApprove}
-                                        title={approveTooltip}
-                                    >
-                                        {approving ? 'Approving...' : 'Approve ↑'}
-                                    </button>
-                                </RequiresRole>
-                            </>
-                        )}
-                    </div>
-                </div>
-
-                {/* Tab Content */}
-                <div className="tab-content" style={{ padding: '0 24px' }}>
-                    {activeTab === -1 && sub.payload.is_update && (
-                        <div style={{ paddingTop: '24px' }} className="diff-summary">
-                            {originalRoute ? (
-                                Object.keys(FIELD_LABELS).map(key => (
-                                    <DiffDisplay
-                                        key={key}
-                                        label={FIELD_LABELS[key]}
-                                        oldValue={originalRoute[key]}
-                                        newValue={sub.payload[key]}
-                                    />
-                                ))
-                            ) : (
-                                <div className="banner banner-error">Loading original route data or none provided...</div>
-                            )}
-                        </div>
-                    )}
-                    {activeTab === 0 && (
-                        <WaypointViewerTab waypoints={waypoints} sub={sub} />
-                    )}
-                    {activeTab === 1 && (
-                        <FilesTab sub={sub} onReload={loadSubmission} />
-                    )}
-                    {activeTab === 2 && (
-                        <IDResolutionTab
-                            preview={preview}
-                            sub={sub}
-                            onReviewed={(collectedConfirmations) => {
-                                if (collectedConfirmations) {
-                                    setConfirmations(collectedConfirmations);
-                                }
-                                loadSubmission(true); // Silent reload to preserve state
-                            }}
-                        />
-                    )}
-                    {activeTab === 3 && (
-                        <ActivityLogTab submissionId={id} />
-                    )}
-                </div>
-            </div>
-
-            {/* STICKY FOOTER */}
-            {activeTab === 0 && sub.status === 'pending' && (
-                <div className="verification-footer">
-                    {!waypointVerified ? (
-                        <div className="gate-bar">
-                            <div className="gate-checks">
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={check1}
-                                        onChange={e => setCheck1(e.target.checked)}
-                                    />
-                                    Reviewed route on map
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={check2}
-                                        onChange={e => setCheck2(e.target.checked)}
-                                    />
-                                    Reviewed elevation profile
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={check3}
-                                        onChange={e => setCheck3(e.target.checked)}
-                                    />
-                                    Route matches source → destination
-                                </label>
-                            </div>
-                            <button
-                                className={`btn ${(check1 && check2 && check3) ? 'btn-primary' : 'btn-secondary'}`}
-                                disabled={!check1 || !check2 || !check3 || verifying}
-                                onClick={handleVerifyRoute}
-                            >
-                                {verifying ? 'Saving...' : 'Mark Route as Verified'}
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="gate-bar gate-passed">
-                            <span className="gate-passed-text">✓ Route verified — open ID Resolution tab to continue</span>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Reject Modal */}
-            {showRejectModal && (
-                <div className="modal-overlay">
-                    <div className="modal">
-                        <h3>Reject Submission</h3>
-                        <p>Provide a reason for rejection (minimum 10 characters).</p>
-                        <textarea
-                            placeholder="Reason for rejection (required)"
-                            value={rejectReason}
-                            onChange={e => setRejectReason(e.target.value)}
-                            rows={3}
-                        />
-                        <div className="modal-actions">
-                            <button className="btn" onClick={() => setShowRejectModal(false)}>Cancel</button>
-                            <button
-                                className="btn btn-danger"
-                                onClick={handleReject}
-                                disabled={rejectReason.length < 10}
+                <div className="flex items-center gap-3">
+                    {sub.status === 'pending' && (
+                        <RequiresRole role="reviewer">
+                            <button 
+                                onClick={() => setShowRejectModal(true)}
+                                className="px-5 py-2.5 bg-danger/10 text-danger border border-danger/20 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-danger/20 transition-all"
                             >
                                 Reject
                             </button>
+                        </RequiresRole>
+                    )}
+                    <button onClick={() => loadSubmission()} className="p-2.5 bg-surface border border-border rounded-xl text-text-muted hover:text-primary transition-all shadow-sm">
+                        <RefreshCw size={18} />
+                    </button>
+                </div>
+            </div>
+
+            {error && (
+                <div className="p-4 bg-danger/5 border border-danger/20 rounded-2xl flex items-center gap-3 text-danger text-xs font-bold">
+                    <AlertCircle size={16} /> {error}
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                {/* Details Column */}
+                <div className="lg:col-span-7 space-y-8">
+                    {p.is_update && originalRoute && (
+                        <div className="bg-surface border border-border rounded-3xl overflow-hidden shadow-sm">
+                            <div className="px-8 py-4 bg-bg/50 border-b border-border flex items-center justify-between">
+                                <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Proposed Changes</h3>
+                                <div className="flex items-center gap-1.5 text-[10px] font-bold text-primary">
+                                    <History size={12} /> Diff Engine
+                                </div>
+                            </div>
+                            <div className="p-8">
+                                <div className="space-y-4">
+                                    {Object.keys(FIELD_LABELS).map(key => (
+                                        <DiffDisplay
+                                            key={key}
+                                            label={FIELD_LABELS[key]}
+                                            oldValue={originalRoute[key]}
+                                            newValue={p[key]}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-surface border border-border rounded-3xl overflow-hidden shadow-sm">
+                        <div className="px-8 py-4 bg-bg/50 border-b border-border">
+                            <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-muted">Submission Parameters</h3>
+                        </div>
+                        <div className="p-8 grid grid-cols-2 gap-x-12 gap-y-6">
+                            {Object.entries(FIELD_LABELS).map(([key, label]) => (
+                                <div key={key} className="flex flex-col gap-1">
+                                    <span className="text-[9px] font-bold text-text-muted uppercase tracking-tight">{label}</span>
+                                    <span className="text-sm font-semibold text-text truncate" title={p[key]}>
+                                        {p[key] || '—'}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Sidebar Column */}
+                <div className="lg:col-span-5 space-y-8">
+                    {/* Control Panel */}
+                    {!isPipelineComplete && !isRejected && (
+                        <div className="bg-surface border-2 border-primary/10 rounded-3xl p-8 shadow-xl shadow-primary/5">
+                            <div className="flex items-center gap-3 mb-8">
+                                <div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
+                                    <Shield size={22} />
+                                </div>
+                                <h3 className="text-lg font-bold tracking-tight">Authorisation Panel</h3>
+                            </div>
+
+                            <div className="space-y-4 mb-8">
+                                <div className={`p-4 rounded-2xl border transition-all ${waypointVerified ? 'bg-success/5 border-success/20' : 'bg-bg border-border'}`}>
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-xs font-bold uppercase tracking-tight">1. Waypoint Verification</span>
+                                            <span className="text-[10px] text-text-muted">Validate route & elevation accuracy.</span>
+                                        </div>
+                                        {waypointVerified ? (
+                                            <CheckCircle2 className="text-success" size={20} />
+                                        ) : (
+                                            <button 
+                                                onClick={handleVerifyRoute}
+                                                className="px-3 py-1 bg-primary text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-opacity"
+                                            >
+                                                Verify
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className={`p-4 rounded-2xl border transition-all ${idResolutionReviewed ? 'bg-success/5 border-success/20' : 'bg-bg border-border'}`}>
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-xs font-bold uppercase tracking-tight">2. ID Resolution</span>
+                                            <span className="text-[10px] text-text-muted">Confirm entity mappings in flights.db.</span>
+                                        </div>
+                                        {idResolutionReviewed ? (
+                                            <CheckCircle2 className="text-success" size={20} />
+                                        ) : (
+                                            <button 
+                                                disabled={!waypointVerified}
+                                                onClick={() => setActiveTab(2)}
+                                                className="px-3 py-1 bg-primary text-white rounded-lg text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-opacity disabled:opacity-30"
+                                            >
+                                                Resolve
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <RequiresRole role="reviewer">
+                                <button 
+                                    onClick={handleApprove}
+                                    disabled={!waypointVerified || !idResolutionReviewed || approving}
+                                    className="w-full py-4 bg-primary text-white rounded-2xl text-sm font-bold shadow-lg shadow-primary/20 hover:opacity-95 disabled:opacity-30 disabled:shadow-none transition-all flex items-center justify-center gap-3"
+                                >
+                                    {approving ? <RefreshCw className="animate-spin" size={18} /> : <CheckCircle size={18} />}
+                                    {approving ? 'EXECUTING PIPELINE...' : 'EXECUTE DB UPDATE'}
+                                </button>
+                            </RequiresRole>
+                        </div>
+                    )}
+
+                    {/* Content Tabs */}
+                    <div className="bg-surface border border-border rounded-3xl overflow-hidden shadow-sm flex flex-col h-[500px]">
+                        <div className="flex border-b border-border bg-bg/30">
+                            {TABS.map((tab, i) => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setActiveTab(i)}
+                                    className={`flex-1 px-4 py-4 text-[9px] font-bold uppercase tracking-widest transition-all ${activeTab === i ? 'text-primary bg-surface border-b-2 border-primary' : 'text-text-muted hover:text-text'}`}
+                                >
+                                    {tab.name}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+                            {activeTab === 0 && <WaypointViewerTab submission={sub} waypointData={waypoints} />}
+                            {activeTab === 1 && <FilesTab submission={sub} />}
+                            {activeTab === 2 && (
+                                <IDResolutionTab 
+                                    submission={sub} 
+                                    preview={preview} 
+                                    onConfirm={loadSubmission} 
+                                    confirmations={confirmations}
+                                    setConfirmations={setConfirmations}
+                                />
+                            )}
+                            {activeTab === 3 && <ActivityLogTab submissionId={submissionId} />}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Rejection Modal */}
+            {showRejectModal && (
+                <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="bg-surface border border-border rounded-3xl w-full max-w-lg shadow-2xl p-8 animate-in zoom-in-95">
+                        <h3 className="text-xl font-bold text-text mb-2">Reject Submission</h3>
+                        <p className="text-sm text-text-muted mb-6">Explain why this submission is being rejected. This will be visible to the operator.</p>
+                        
+                        <textarea 
+                            value={rejectReason}
+                            onChange={(e) => setRejectReason(e.target.value)}
+                            className="w-full h-32 bg-bg border border-border rounded-2xl p-4 text-sm focus:outline-none focus:ring-2 focus:ring-danger/20 focus:border-danger text-text mb-6 resize-none"
+                            placeholder="e.g. Mission file has incorrect waypoints, please re-upload."
+                        />
+
+                        <div className="flex gap-4">
+                            <button 
+                                onClick={() => setShowRejectModal(false)}
+                                className="flex-1 py-3 bg-bg border border-border rounded-xl text-xs font-bold uppercase tracking-widest"
+                            >
+                                Cancel
+                            </button>
+                            <button 
+                                onClick={handleReject}
+                                disabled={rejectReason.length < 10}
+                                className="flex-1 py-3 bg-danger text-white rounded-xl text-xs font-bold uppercase tracking-widest shadow-lg shadow-danger/20 disabled:opacity-30"
+                            >
+                                Confirm Rejection
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+export default function SubmissionDetail({ id: propId, embedded = false }) {
+    const routeParams = useParams();
+    const navigate = useNavigate();
+    const submissionId = propId || routeParams.id;
+
+    if (!submissionId) {
+        return null;
+    }
+
+    if (embedded) {
+        return (
+            <SubmissionDetailContent submissionId={submissionId} onBack={null} />
+        );
+    }
+
+    return (
+        <div className="p-8 max-w-7xl mx-auto">
+            <SubmissionDetailContent submissionId={submissionId} onBack={() => navigate(-1)} />
         </div>
     );
 }

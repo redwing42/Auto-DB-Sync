@@ -92,7 +92,7 @@ export default function DashboardPage() {
                                     <tbody>
                                         {stats.recent_approved.map(r => (
                                             <tr key={r.id}>
-                                                <td className="table-id">#{r.id.slice(0, 6)}</td>
+                                                <td className="table-id">{r.human_id || `RW-${r.id.slice(0, 6)}`}</td>
                                                 <td className="table-route" style={{ fontSize: '12px' }}>{r.route}</td>
                                                 <td className="table-meta">{r.mission_file}</td>
                                                 <td className="table-meta">{new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>

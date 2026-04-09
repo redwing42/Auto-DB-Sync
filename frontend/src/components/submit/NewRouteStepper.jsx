@@ -358,7 +358,7 @@ export default function NewRouteStepper() {
             const result = await api.createSubmission(buildPayload());
             // Phase 4: Clear draft on successful submission
             await clearDraft();
-            addToast(`Submission created: #${result.submission_id.slice(0, 8)}`);
+            addToast(`Submission created: ${result.human_id || `#${result.submission_id.slice(0, 8)}`}`);
             navigate('/');
         } catch (e) {
             addToast(`Submit failed: ${e.message}`);

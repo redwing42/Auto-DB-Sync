@@ -202,8 +202,10 @@ async def webhook_new_submission(
     )
 
     logger.info(f"New submission received: {submission_id} (Status: {status})")
+    sub = store.get_submission(submission_id)
     return {
         "submission_id": submission_id,
+        "human_id": sub.human_id if sub else f"#{submission_id[:8]}",
         "status": status.value,
         "warnings": validation.warnings,
     }
@@ -284,8 +286,10 @@ async def create_submission(
     )
 
     logger.info(f"UI submission created: {submission_id} by {user['email']} ({submission_type})")
+    sub = store.get_submission(submission_id)
     return {
         "submission_id": submission_id,
+        "human_id": sub.human_id if sub else f"#{submission_id[:8]}",
         "status": status.value,
         "warnings": validation.warnings,
     }
@@ -620,8 +624,29 @@ async def list_locations(
     conn = _sqlite3.connect(str(flights_db))
     conn.row_factory = _sqlite3.Row
     try:
-        rows = conn.execute("SELECT id, name, code, COALESCE(landing_zone_count, 0) as landing_zone_count FROM locations ORDER BY name").fetchall()
+        rows = conn.execute("SELECT id, name, code, location_type, COALESCE(landing_zone_count, 0) as landing_zone_count FROM locations ORDER BY name").fetchall()
         return [LocationInfo(**dict(r)) for r in rows]
+    finally:
+        conn.close()
+        
+@app.patch("/locations/{location_id}")
+async def patch_location(
+    location_id: int,
+    updates: dict,
+    settings: Settings = Depends(get_settings),
+    _auth: dict = Depends(require_role('reviewer')),
+):
+    """Update location metadata like type (Hub/Node)."""
+    import sqlite3 as _sqlite3
+    flights_db = settings.instance_dir / "flights.db"
+    
+    conn = _sqlite3.connect(str(flights_db))
+    try:
+        if "location_type" in updates:
+            conn.execute("UPDATE locations SET location_type = ? WHERE id = ?", (updates["location_type"], location_id))
+            conn.commit()
+            return {"status": "success"}
+        raise HTTPException(status_code=400, detail="No valid fields to update")
     finally:
         conn.close()
 
@@ -1160,6 +1185,7 @@ async def get_stats(
             if s.status.value == "approved" and len(recent) < 10:
                 recent.append({
                     "id": s.id,
+                    "human_id": s.human_id,
                     "route": f"{s.payload.source_location_name} → {s.payload.destination_location_name}",
                     "mission_file": s.payload.mission_filename,
                     "created_at": s.created_at,
@@ -1327,39 +1353,29 @@ async def get_network_map(
     store: SubmissionStore = Depends(get_store),
     user: dict = Depends(require_role('operator')),
 ):
-    """Return all routes and locations for the network map, including pending submissions."""
+    """Return hub-node route groups and locations for the network map."""
     flights_db = settings.instance_dir / "flights.db"
     
-    routes = []
+    route_groups = {}
     locations = []
     lzs = []
+    pending_submissions = []
 
     if flights_db.exists():
         conn = sqlite3.connect(flights_db)
         conn.row_factory = sqlite3.Row
         
-        # Get all active routes
-        routes_rows = conn.execute("""
-            SELECT 
-                r.id, r.network_id,
-                l1.name as start_location_name, l2.name as end_location_name,
-                lz1.name as start_lz_name, lz2.name as end_lz_name,
-                lz1.latitude as start_latitude, lz1.longitude as start_longitude,
-                lz2.latitude as end_latitude, lz2.longitude as end_longitude,
-                wf.filename as mission_filename, r.status
-            FROM flight_routes r
-            JOIN landing_zones lz1 ON r.start_lz_id = lz1.id
-            JOIN landing_zones lz2 ON r.end_lz_id = lz2.id
-            JOIN locations l1 ON lz1.location_id = l1.id
-            JOIN locations l2 ON lz2.location_id = l2.id
-            LEFT JOIN waypoint_files wf ON r.waypoint_file_id = wf.id
-            WHERE r.status = 1
+        # Get all locations and map type
+        loc_rows = conn.execute("""
+            SELECT l.id, l.name, l.code, l.location_type,
+                   AVG(lz.latitude) as latitude, AVG(lz.longitude) as longitude
+            FROM locations l
+            LEFT JOIN landing_zones lz ON lz.location_id = l.id
+            GROUP BY l.id, l.name, l.code, l.location_type
         """).fetchall()
-        routes = [dict(r) for r in routes_rows]
-
-        # Get all locations
-        loc_rows = conn.execute("SELECT id, name, code FROM locations").fetchall()
         locations = [dict(l) for l in loc_rows]
+        loc_type_map = {l['id']: l['location_type'] for l in locations}
+        loc_name_map = {l['id']: l['name'] for l in locations}
         
         # Get all LZs
         lz_rows = conn.execute("""
@@ -1369,12 +1385,111 @@ async def get_network_map(
         """).fetchall()
         lzs = [dict(lz) for lz in lz_rows]
 
+        # Get all routes (Active and Inactive)
+        routes_query = """
+            SELECT 
+                r.id, r.network_id, n.name as network_name,
+                r.start_location_id, r.end_location_id,
+                lz1.name as start_lz_name, lz2.name as end_lz_name,
+                lz1.latitude as start_latitude, lz1.longitude as start_longitude,
+                lz2.latitude as end_latitude, lz2.longitude as end_longitude,
+                wf.filename as mission_filename, r.status,
+                r.takeoff_direction, r.approach_direction
+            FROM flight_routes r
+            JOIN networks n ON r.network_id = n.id
+            JOIN landing_zones lz1 ON r.start_lz_id = lz1.id
+            JOIN landing_zones lz2 ON r.end_lz_id = lz2.id
+            LEFT JOIN waypoint_files wf ON r.waypoint_file_id = wf.id
+        """
+        routes_rows = conn.execute(routes_query).fetchall()
+        
+        # Fetch approved sub snapshots for latest_submission_id & metadata
+        # We fetch all approved subs and map them to routes
+        approved_subs = []
+        for s in store.list_submissions():
+            if s.status == SubmissionStatus.APPROVED:
+                approved_subs.append(s)
+        
+        # Mapping: route_id -> latest_approved_sub
+        route_to_sub = {}
+        for s in approved_subs:
+            rid = s.payload.update_for_route_id
+            if rid:
+                if rid not in route_to_sub or s.created_at > route_to_sub[rid].created_at:
+                    route_to_sub[rid] = s
+            else:
+                # Match by filename
+                fname = s.payload.mission_filename
+                # We'll match this later during route iteration
+        
+        for r_row in routes_rows:
+            r = dict(r_row)
+            sid = r['start_location_id']
+            eid = r['end_location_id']
+            
+            # Identify Hub and Node
+            if loc_type_map.get(sid) == 'HUB':
+                hub_id, node_id = sid, eid
+                direction = "HUB_TO_NODE"
+            elif loc_type_map.get(eid) == 'HUB':
+                hub_id, node_id = eid, sid
+                direction = "NODE_TO_HUB"
+            else:
+                # Fallback to ID sort if neither/both are hubs
+                hub_id, node_id = (sid, eid) if sid < eid else (eid, sid)
+                direction = "HUB_TO_NODE" if sid == hub_id else "NODE_TO_HUB"
+
+            group_key = f"{hub_id}-{node_id}"
+            if group_key not in route_groups:
+                route_groups[group_key] = {
+                    "hub_location_id": hub_id,
+                    "hub_location_name": loc_name_map.get(hub_id),
+                    "node_location_id": node_id,
+                    "node_location_name": loc_name_map.get(node_id),
+                    "network_id": r['network_id'],
+                    "network_name": r['network_name'],
+                    "start_latitude": r['start_latitude'], # Reference points for drawing
+                    "start_longitude": r['start_longitude'],
+                    "end_latitude": r['end_latitude'],
+                    "end_longitude": r['end_longitude'],
+                    "routes": []
+                }
+            
+            # Variant extraction (L01/L02)
+            fname = r['mission_filename'] or ""
+            variant = "L01" if fname.startswith("L01_") else "L02" if fname.startswith("L02_") else "Unknown"
+            
+            # Find latest submission
+            latest_sub = route_to_sub.get(r['id'])
+            if not latest_sub:
+                # Search by filename in approved_subs
+                for s in approved_subs:
+                    if s.payload.mission_filename == fname:
+                        if not latest_sub or s.created_at > latest_sub.created_at:
+                            latest_sub = s
+            
+            route_groups[group_key]["routes"].append({
+                "id": r['id'],
+                "mission_filename": fname,
+                "direction": direction,
+                "variant": variant,
+                "start_lz_name": r['start_lz_name'],
+                "end_lz_name": r['end_lz_name'],
+                "start_location_type": loc_type_map.get(sid, 'NODE'),
+                "end_location_type": loc_type_map.get(eid, 'NODE'),
+                "status": "ACTIVE" if r['status'] == 1 else "INACTIVE",
+                "last_updated": latest_sub.created_at if latest_sub else None,
+                "last_updated_by": latest_sub.approved_by_name if latest_sub else None,
+                "latest_submission_id": latest_sub.id if latest_sub else None,
+                "takeoff_direction": r.get('takeoff_direction'),
+                "approach_direction": r.get('approach_direction')
+            })
+
         conn.close()
 
-    # Add pending submissions (this week)
-    pending_submissions = []
     all_subs = store.list_submissions()
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    now = datetime.now(timezone.utc).isoformat()
     
     for sub in all_subs:
         sub_time = datetime.fromisoformat(sub.created_at.replace('Z', '+00:00'))
@@ -1390,11 +1505,22 @@ async def get_network_map(
                 "submitted_by": sub.submitted_by_name
             })
 
+    # Stats: total active routes, hub-node pairs, pending
+    total_active = 0
+    for group in route_groups.values():
+        total_active += sum(1 for r in group['routes'] if r['status'] == 'ACTIVE')
+
     return {
-        "routes": routes,
+        "route_groups": list(route_groups.values()),
         "locations": locations,
         "landing_zones": lzs,
-        "pending_submissions": pending_submissions
+        "pending_submissions": pending_submissions,
+        "stats": {
+            "total_active": total_active,
+            "pair_count": len(route_groups),
+            "pending_count": len(pending_submissions),
+            "last_sync": now
+        }
     }
 
 
@@ -1430,3 +1556,195 @@ async def health(settings: Settings = Depends(get_settings)):
         "service": "redwing-db-automation",
         "components": comp_status
     }
+
+
+# ── 15. Route Tracker — AUTHORITATIVE LOG ─────────────────────────────────────
+
+@app.get("/route-tracker")
+async def get_route_tracker(
+    event_type: Optional[str] = None,
+    network_id: Optional[int] = None,
+    days: Optional[int] = None,
+    search: Optional[str] = None,
+    _auth: dict = Depends(require_role('sde')),
+    audit_store: AuditStore = Depends(get_audit_store),
+    settings: Settings = Depends(get_settings)
+):
+    """AUTHORITATIVE log of flights.db updates (PIPELINE_COMPLETE)."""
+    return audit_store.get_route_tracker_data(
+        submissions_db_path=settings.SUBMISSIONS_DB_PATH,
+        event_type=event_type,
+        network_id=network_id,
+        days=days,
+        search=search
+    )
+
+
+# Backwards-compatible Admin aliases for spec-compliant endpoints
+
+@app.patch("/admin/users/{uid}/role")
+async def patch_admin_user_role(
+    uid: str,
+    body: dict,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Update only the user's role (Admin only). Convenience wrapper."""
+    import auth as auth_helper
+    new_role = body.get("role")
+    if not new_role:
+        raise HTTPException(status_code=400, detail="Missing 'role' in body")
+    auth_helper.update_user_info(uid, {"role": new_role})
+    return {"status": "success"}
+
+
+@app.patch("/admin/users/{uid}/deactivate")
+async def deactivate_admin_user(
+    uid: str,
+    body: Optional[dict] = None,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Deactivate a user account without deleting it (Admin only)."""
+    import auth as auth_helper
+    # Display-only convention: status field is used by the frontend to mute rows.
+    reason = (body or {}).get("reason")
+    updates = {"status": "Inactive"}
+    if reason:
+        updates["deactivation_reason"] = reason
+    auth_helper.update_user_info(uid, updates)
+    return {"status": "success"}
+
+
+@app.get("/admin/audit")
+async def get_admin_audit_alias(
+    page: int = 1,
+    limit: int = 50,
+    action_type: Optional[str] = None,
+    uid: Optional[str] = None,
+    days: Optional[int] = None,
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Alias for /admin/audit-log to match spec."""
+    return audit_store.get_all_audit_paginated(
+        page=page,
+        limit=limit,
+        action_type=action_type,
+        uid=uid,
+        days=days
+    )
+
+
+@app.get("/admin/audit/export")
+async def export_admin_audit_alias(
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Alias for /admin/audit-log/export to match spec."""
+    return await export_admin_audit_log(_auth=_auth, audit_store=audit_store)
+
+
+# ── 16. Admin Control Panel ───────────────────────────────────────────────────
+
+@app.get("/admin/users")
+async def get_admin_users(
+    _auth: dict = Depends(require_role('admin')),
+):
+    """List all users from Auth and Firestore (Admin only)."""
+    import auth as auth_helper
+    return auth_helper.get_all_users_info()
+
+
+@app.patch("/admin/users/{uid}")
+async def patch_admin_user(
+    uid: str,
+    updates: dict,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Update user role, status (deactivate), or flags (Admin only)."""
+    import auth as auth_helper
+    auth_helper.update_user_info(uid, updates)
+    return {"status": "success"}
+
+
+@app.get("/admin/feature-visibility")
+async def get_admin_feature_visibility(
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Fetch feature visibility matrix (Admin only)."""
+    import auth as auth_helper
+    return auth_helper.get_feature_visibility()
+
+
+@app.patch("/admin/feature-visibility/{feature_id}")
+async def patch_admin_feature_visibility(
+    feature_id: str,
+    updates: dict,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Update feature visibility matrix (Admin only)."""
+    import auth as auth_helper
+    auth_helper.update_feature_visibility(feature_id, updates)
+    return {"status": "success"}
+
+
+@app.get("/admin/audit-log")
+async def get_admin_audit_log(
+    page: int = 1,
+    limit: int = 50,
+    action_type: Optional[str] = None,
+    uid: Optional[str] = None,
+    days: Optional[int] = None,
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Full system audit log viewer (Admin only)."""
+    return audit_store.get_all_audit_paginated(
+        page=page,
+        limit=limit,
+        action_type=action_type,
+        uid=uid,
+        days=days
+    )
+
+
+@app.get("/admin/audit-log/export")
+async def export_admin_audit_log(
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Export full audit log to CSV for external auditing."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    import json
+
+    rows = audit_store.get_all_audit_for_export()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Timestamp (UTC)", "Action", "User", "Submission ID", "Details"])
+    
+    for row in rows:
+        meta = row["metadata"]
+        memo = ""
+        if meta:
+            try:
+                m_obj = json.loads(meta) if isinstance(meta, str) else meta
+                memo = m_obj.get("memo", str(meta))
+            except:
+                memo = str(meta)
+        
+        writer.writerow([
+            row["timestamp_utc"],
+            row["action_type"],
+            row["performed_by_name"],
+            row["submission_id"] or "System",
+            memo
+        ])
+    
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=redwing_audit_log.csv"}
+    )

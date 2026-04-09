@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, List, Optional
@@ -158,6 +159,11 @@ async def _send_email(
     submission_id: Optional[str] = None,
 ) -> None:
     """Send an email via Gmail SMTP with XOAUTH2 using GNOME OAuth2 token."""
+    # Tests/dev environments shouldn't require GNOME Online Accounts.
+    if os.getenv("PYTEST_CURRENT_TEST") is not None or os.getenv("DISABLE_EMAIL") == "1":
+        logger.info("Email disabled; skipping send for subject=%r", subject)
+        return
+
     from config import get_settings
     settings = get_settings()
 
