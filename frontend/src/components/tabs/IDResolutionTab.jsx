@@ -146,7 +146,13 @@ export default function IDResolutionTab({ preview, sub, onReviewed }) {
 
             {/* CONFIRMATION GATE */}
             {!isReviewed ? (
-                <div className="card" style={{ background: hasNew ? '#FEFCE8' : 'white', border: hasNew ? '1px solid #FEF08A' : '1px solid var(--border)' }}>
+                <div
+                    className="card"
+                    style={{
+                        background: hasNew ? 'var(--caution-bg)' : 'var(--surface)',
+                        border: hasNew ? `1px solid rgba(251, 191, 36, 0.35)` : '1px solid var(--border)'
+                    }}
+                >
                     <h4 style={{ marginTop: 0, marginBottom: '16px', fontSize: '14px' }}>Approval Confirmation</h4>
 
                     {hasNew ? (
@@ -169,7 +175,7 @@ export default function IDResolutionTab({ preview, sub, onReviewed }) {
                         </p>
                     )}
 
-                    <div className="flex justify-end">
+                    <div className="flex" style={{ justifyContent: 'flex-end' }}>
                         <RequiresRole role="operator">
                             <button
                                 className={`btn ${allConfirmed ? 'btn-primary' : 'btn-secondary'}`}

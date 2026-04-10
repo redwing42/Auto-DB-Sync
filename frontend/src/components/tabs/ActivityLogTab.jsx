@@ -29,7 +29,13 @@ export default function ActivityLogTab({ submissionId }) {
         }
     }, [submissionId]);
 
-    if (loading) return <div className="p-24 text-muted">Loading activity log...</div>;
+    if (loading) {
+        return (
+            <div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 14 }}>
+                Loading activity log...
+            </div>
+        );
+    }
 
     if (logs.length === 0) {
         return (
