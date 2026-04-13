@@ -27,8 +27,8 @@ export default function FilesTab({ sub, onReload }) {
             {/* Download controls */}
             <div className="card mb-24">
                 <div className="flex items-center gap-12">
-                    <span className={`dl-badge dl-${sub.download_status}`}>
-                        {sub.download_status.replace('_', ' ')}
+                    <span className={`dl-badge dl-${sub.download_status ?? 'not_started'}`}>
+                        {(sub.download_status ?? 'not started').replace(/_/g, ' ')}
                     </span>
 
                     {sub.status === 'pending' && (

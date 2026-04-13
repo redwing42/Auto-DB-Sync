@@ -6,20 +6,30 @@ export const MAVLINK_COMMANDS = {
     17: 'LOITER_UNLIM',
     18: 'LOITER_TURNS',
     19: 'LOITER_TIME',
-    20: 'RTL',
+    20: 'RETURN_TO_LAUNCH',
     21: 'LAND',
     22: 'TAKEOFF',
+    84: 'VTOL_TAKEOFF',
+    85: 'VTOL_LAND',
+    115: 'LOITER_TO_ALT',
+    201: 'TAKEOFF',
     177: 'DO_JUMP',
     178: 'DO_CHANGE_SPEED',
     189: 'DO_LAND_START',
+    190: 'DO_GO_AROUND',
+    193: 'DO_SET_CAM_TRIGG_DIST',
+    195: 'DO_SET_ROI',
+    200: 'DO_CONTROL_VIDEO',
     203: 'DO_AUX_FUNCTION',
+    206: 'DO_SET_MISSION_CURRENT',
+    3000: 'SET_HOME',
 };
 
 const COORD_FRAMES = {
-    0: 'GLOBAL',
-    3: 'GLOBAL_REL_ALT',
+    0: 'Global (MSL)',
+    3: 'Global Relative (AGL)',
     6: 'GLOBAL_INT',
-    10: 'TERRAIN_ALT',
+    10: 'AGL',
 };
 
 const ACTION_COMMANDS = new Set([177, 178, 189, 203]);

@@ -1,11 +1,15 @@
 import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './components/shared/Toast';
 import AppShell from './components/shell/AppShell';
 import InboxPage from './pages/InboxPage';
+import DashboardPage from './pages/DashboardPage';
+import NetworkMapPage from './pages/NetworkMapPage';
 import SubmissionDetail from './components/submissions/SubmissionDetail';
 import StatsPage from './pages/StatsPage';
+import RouteTrackerPage from './pages/RouteTrackerPage';
+import AdminPage from './pages/AdminPage';
 import ViewerPage from './pages/ViewerPage';
 import LoginPage from './components/auth/LoginPage';
 import SubmitPage from './pages/SubmitPage';
@@ -24,10 +28,11 @@ function AppContent() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 fontFamily: 'Barlow, sans-serif',
-                color: '#6B7280',
-                fontSize: '14px'
+                color: 'var(--text-secondary)',
+                fontSize: '14px',
+                background: 'var(--bg)'
             }}>
-                Loading...
+                Loading RedWing Ops...
             </div>
         );
     }
@@ -37,9 +42,14 @@ function AppContent() {
     return (
         <AppShell>
             <Routes>
-                <Route path="/" element={<InboxPage />} />
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/submissions" element={<InboxPage />} />
                 <Route path="/submissions/:id" element={<SubmissionDetail />} />
+                <Route path="/network-map" element={<NetworkMapPage />} />
                 <Route path="/stats" element={<StatsPage />} />
+                <Route path="/route-tracker" element={<RouteTrackerPage />} />
+                <Route path="/admin" element={<AdminPage />} />
                 <Route path="/viewer" element={<ViewerPage />} />
                 <Route path="/submit" element={<SubmitPage />} />
                 <Route path="/submit/new" element={<NewRouteStepper />} />

@@ -40,9 +40,6 @@ class Settings(BaseSettings):
     # ── Audit DB ─────────────────────────────────────────────────────────
     AUDIT_DB_PATH: str = "./audit.db"
 
-    # ── Server ───────────────────────────────────────────────────────────
-    NGROK_DOMAIN: str = ""
-
     # ── Frontend ─────────────────────────────────────────────────────────
     CESIUM_ION_TOKEN: str = ""
 
@@ -57,6 +54,7 @@ class Settings(BaseSettings):
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
         ),
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # ── Derived Paths ────────────────────────────────────────────────────

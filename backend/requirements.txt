@@ -7,5 +7,6 @@ python-dotenv>=1.0.0
 httpx>=0.25.0
 aiosmtplib>=2.0.0
 firebase-admin>=6.0.0
+python-multipart>=0.0.9
 pytest>=7.4.0
 pytest-asyncio>=0.21.0

@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Sun, Moon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useTheme } from '../../context/ThemeContext';
 
 export default function TopBar() {
     const { user, logout } = useAuth();
+    const { theme, toggleTheme } = useTheme();
     const [query, setQuery] = useState('');
     const [showMenu, setShowMenu] = useState(false);
 
@@ -27,6 +29,14 @@ export default function TopBar() {
             </div>
 
             <div className="topbar-actions">
+                <button 
+                  onClick={toggleTheme}
+                  className="btn-theme-toggle"
+                  title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+                >
+                  {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+                </button>
+
                 <div style={{ position: 'relative' }}>
                     <img
                         src={user?.photoURL || 'https://www.google.com/favicon.ico'}
@@ -36,7 +46,7 @@ export default function TopBar() {
                             height: 32,
                             borderRadius: '50%',
                             cursor: 'pointer',
-                            border: '2px solid #E5E7EB'
+                            border: '2px solid var(--border)'
                         }}
                         onClick={() => setShowMenu(!showMenu)}
                         title={user?.displayName || user?.email}
@@ -46,24 +56,24 @@ export default function TopBar() {
                             position: 'absolute',
                             right: 0,
                             top: '40px',
-                            background: 'white',
-                            border: '1px solid #E5E7EB',
+                            background: 'var(--surface)',
+                            border: '1px solid var(--border)',
                             borderRadius: '8px',
                             padding: '8px',
                             minWidth: '200px',
-                            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
                             zIndex: 100
                         }}>
-                            <div style={{ padding: '8px 12px', borderBottom: '1px solid #E5E7EB', marginBottom: '4px' }}>
-                                <div style={{ fontSize: '13px', fontWeight: 500, color: '#111827' }}>
+                            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', marginBottom: '4px' }}>
+                                <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text)' }}>
                                     {user?.displayName}
                                 </div>
-                                <div style={{ fontSize: '12px', color: '#6B7280' }}>{user?.email}</div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{user?.email}</div>
                                 <div style={{
                                     fontSize: '11px',
                                     fontFamily: 'Barlow Condensed, sans-serif',
                                     fontWeight: 600,
-                                    color: '#2563EB',
+                                    color: 'var(--primary)',
                                     textTransform: 'uppercase',
                                     letterSpacing: '0.06em',
                                     marginTop: '4px'
@@ -81,7 +91,7 @@ export default function TopBar() {
                                     textAlign: 'left',
                                     cursor: 'pointer',
                                     fontSize: '13px',
-                                    color: '#DC2626',
+                                    color: 'var(--danger)',
                                     borderRadius: '4px',
                                     fontFamily: 'Barlow, sans-serif'
                                 }}

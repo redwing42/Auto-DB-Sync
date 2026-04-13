@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Lock } from 'lucide-react';
+import { ArrowLeft, CheckCircle, RefreshCw, History, Globe, CheckCircle2, AlertCircle } from 'lucide-react';
 import { api } from '../../api/api';
 import StatusBadge from '../shared/StatusBadge';
 import WaypointViewerTab from '../tabs/WaypointViewerTab';
@@ -9,8 +9,10 @@ import IDResolutionTab from '../tabs/IDResolutionTab';
 import ActivityLogTab from '../tabs/ActivityLogTab';
 import RequiresRole from '../shared/RequiresRole';
 import DiffDisplay from '../submit/DiffDisplay';
+import { HoveredWaypointProvider } from '../../context/HoveredWaypointContext';
 
 const TABS = [
+    { name: 'Details', id: 'details' },
     { name: 'Waypoint Viewer', id: 'waypoints' },
     { name: 'Files', id: 'files' },
     { name: 'ID Resolution', id: 'resolution', locked: true },
@@ -39,15 +41,13 @@ const WORKFLOW_LABELS = {
 };
 
 function WorkflowBadge({ state }) {
+    if (!state) return null;
     const label = WORKFLOW_LABELS[state] || state;
-    const className = `workflow-badge state-${state?.toLowerCase()}`;
-    return <span className={className}>{label}</span>;
+    const className = `workflow-badge state-${state.toLowerCase()}`;
+    return <span className={className} style={{ fontSize: '10px' }}>{label}</span>;
 }
 
-export default function SubmissionDetail() {
-    const { id } = useParams();
-    const navigate = useNavigate();
-    const [searchParams] = useSearchParams();
+export function SubmissionDetailContent({ submissionId, onBack, embedded = false }) {
     const [sub, setSub] = useState(null);
     const [preview, setPreview] = useState(null);
     const [waypoints, setWaypoints] = useState(null);
@@ -58,31 +58,35 @@ export default function SubmissionDetail() {
     const [approving, setApproving] = useState(false);
     const [rejectReason, setRejectReason] = useState('');
     const [showRejectModal, setShowRejectModal] = useState(false);
-
-    // Confirmation storage for the approve call
-    const [confirmations, setConfirmations] = useState({});
-
-    // Gate 1 Checkboxes (Local State)
-    const [check1, setCheck1] = useState(false);
-    const [check2, setCheck2] = useState(false);
-    const [check3, setCheck3] = useState(false);
-    const [verifying, setVerifying] = useState(false);
+    const [searchParams, setSearchParams] = useSearchParams();
+    const [waypointVerification, setWaypointVerification] = useState({
+        mapReviewed: false,
+        elevationReviewed: false,
+        tableReviewed: false,
+        filesReviewed: false,
+    });
 
     const loadSubmission = async (silent = false) => {
         if (!silent) setLoading(true);
         setError(null);
         try {
-            const data = await api.getSubmission(id);
+            const data = await api.getSubmission(submissionId);
             setSub(data);
+            setWaypointVerification({
+                mapReviewed: false,
+                elevationReviewed: false,
+                tableReviewed: false,
+                filesReviewed: false,
+            });
             try {
-                const previewData = await api.getResolvePreview(id);
+                const previewData = await api.getResolvePreview(submissionId);
                 setPreview(previewData);
             } catch (err) {
                 console.error("Failed to load resolve preview:", err);
             }
             if (data.download_status === 'completed') {
                 try {
-                    const wpData = await api.getWaypointData(id);
+                    const wpData = await api.getWaypointData(submissionId);
                     setWaypoints(wpData);
                 } catch (err) {
                     console.error("Failed to load waypoint data:", err);
@@ -104,9 +108,6 @@ export default function SubmissionDetail() {
                         takeoff_direction: od.takeoff_direction,
                         approach_direction: od.approach_direction,
                         mission_filename: od.mission_filename || '',
-                        mission_drive_link: '',
-                        elevation_image_drive_link: '',
-                        route_image_drive_link: '',
                     });
                 } catch (err) {
                     console.error("Failed to load original route for diff:", err);
@@ -119,60 +120,47 @@ export default function SubmissionDetail() {
         }
     };
 
-    useEffect(() => { loadSubmission(); }, [id]);
+    useEffect(() => { loadSubmission(); }, [submissionId]);
 
-    // Respond to ?tab= query param from nav buttons
-    useEffect(() => {
-        const tab = searchParams.get('tab');
-        if (tab === 'files') setActiveTab(1);
-        else if (tab === 'resolution') setActiveTab(2);
-    }, [searchParams]);
+    const selectTab = useCallback((i) => {
+        setActiveTab(i);
+        if (embedded) return;
+        setSearchParams((prev) => {
+            const n = new URLSearchParams(prev);
+            n.set('tab', TABS[i].id);
+            return n;
+        }, { replace: true });
+    }, [embedded, setSearchParams]);
 
     useEffect(() => {
-        if (sub && sub.payload.is_update && activeTab === 0 && !searchParams.get('tab')) {
-            setActiveTab(-1);
+        if (embedded) return;
+        const t = searchParams.get('tab');
+        if (!t) {
+            setActiveTab(0);
+            setSearchParams((prev) => {
+                const n = new URLSearchParams(prev);
+                n.set('tab', 'details');
+                return n;
+            }, { replace: true });
+            return;
         }
-    }, [sub, searchParams]);
-
-    if (loading) return <div className="loading-state">Loading submission...</div>;
-    if (!sub) return <div className="banner banner-error">Submission not found.</div>;
-
-    const p = sub.payload;
-    const waypointVerified = sub.waypoint_verified;
-    const idResolutionReviewed = sub.id_resolution_reviewed;
-
-    // Approve enabled ONLY when BOTH gates pass
-    const canApprove = waypointVerified && idResolutionReviewed && sub.status === 'pending';
-
-    const approveTooltip = !waypointVerified
-        ? "Complete waypoint verification first"
-        : !idResolutionReviewed
-            ? "Review ID Resolution tab first"
-            : "";
+        const idx = TABS.findIndex((tab) => tab.id === t);
+        if (idx >= 0) setActiveTab(idx);
+    }, [embedded, searchParams, submissionId]);
 
     const handleApprove = async () => {
         setApproving(true);
         setError(null);
         try {
-            // BULLETPROOF CONFIRMATIONS: 
-            // If the user already passed the ID Resolution gate in the DB, 
-            // we auto-confirm all "new" entities to prevent 403 errors if local state was lost on reload.
-            const confirmed_new_entities = {
-                source_location: confirmations.source_location || false,
-                source_lz: confirmations.source_lz || false,
-                destination_location: confirmations.destination_location || false,
-                destination_lz: confirmations.destination_lz || false,
-            };
-
-            if (idResolutionReviewed && preview) {
+            const confirmed_new_entities = {};
+            if (preview) {
                 ['source_location', 'source_lz', 'destination_location', 'destination_lz'].forEach(key => {
                     if (preview[key]?.action === 'new') {
                         confirmed_new_entities[key] = true;
                     }
                 });
             }
-
-            await api.approveSubmission(id, confirmed_new_entities);
+            await api.approveSubmission(submissionId, confirmed_new_entities);
             await loadSubmission(true);
         } catch (err) {
             setError(err.message);
@@ -184,7 +172,7 @@ export default function SubmissionDetail() {
     const handleReject = async () => {
         if (rejectReason.length < 10) return;
         try {
-            await api.rejectSubmission(id, rejectReason);
+            await api.rejectSubmission(submissionId, rejectReason);
             setShowRejectModal(false);
             await loadSubmission(true);
         } catch (err) {
@@ -192,286 +180,268 @@ export default function SubmissionDetail() {
         }
     };
 
-    const handleMarkDuplicate = async () => {
-        if (!window.confirm('Are you sure you want to mark this as a duplicate?')) return;
+    const handleVerifyRoute = async () => {
         try {
-            await api.markAsDuplicate(id);
+            await api.updateReviewState(submissionId, { waypoint_verified: true });
             await loadSubmission(true);
         } catch (err) {
             setError(err.message);
         }
     };
 
-    const handleVerifyRoute = async () => {
-        setVerifying(true);
-        try {
-            await api.updateReviewState(id, { waypoint_verified: true });
-            await loadSubmission(true);
-        } catch (err) {
-            alert(err.message);
-        } finally {
-            setVerifying(false);
-        }
-    };
+    if (loading) return (
+        <div className="submission-detail__loading">
+            <div className="submission-detail__spinner" />
+            <span className="submission-detail__loading-label">Synchronizing Metadata...</span>
+        </div>
+    );
 
-    // ID Resolution tab clickable ONLY when gate 1 passes
-    const idResolutionUnlocked = waypointVerified;
+    if (!sub) return <div className="submission-detail__not-found">Submission Not Found</div>;
+
+    const p = sub.payload;
+    const waypointVerified = sub.waypoint_verified;
+    const allWaypointChecksDone = Object.values(waypointVerification).every(Boolean);
+    const idResolutionReviewed = sub.id_resolution_reviewed;
+    const isPipelineComplete = sub.workflow_state === 'PIPELINE_COMPLETE';
+    const isRejected = sub.status === 'rejected';
 
     return (
-        <div style={{ position: 'relative', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ flex: 1, paddingBottom: (activeTab === 0 && sub.status === 'pending') ? '80px' : '0' }}>
-                {/* Header */}
-                <div className="detail-header">
-                    <button className="btn btn-ghost" onClick={() => navigate('/')}>
-                        <ArrowLeft size={18} />
-                    </button>
-                    <h1>{sub.human_id || `Submission #${id.slice(0, 6)}`}</h1>
-                    <span style={{ margin: '0 8px' }}>—</span>
-                    <span style={{ fontWeight: 500 }}>{p.source_location_name} → {p.destination_location_name}</span>
-                    {p.is_update && (
-                        <span style={{
-                            marginLeft: '12px', fontSize: '0.7rem', fontWeight: 600,
-                            padding: '2px 6px', borderRadius: '4px',
-                            backgroundColor: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd'
-                        }}>
-                            UPDATE
-                        </span>
+        <div className="submission-detail">
+            <div className="submission-detail__header">
+                <div className="submission-detail__title-block">
+                    {onBack && (
+                        <button type="button" onClick={onBack} className="submission-detail__back-btn" aria-label="Back">
+                            <ArrowLeft size={20} />
+                        </button>
                     )}
-                    <div style={{ marginLeft: '12px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div>
+                        <div className="submission-detail__title-row">
+                            <h1 className="submission-detail__title">RW-{sub.serial_id || sub.id.substring(0, 8)}</h1>
                             <StatusBadge status={sub.status} />
-                            {sub.status === 'approved' && sub.approved_by_name && (
-                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>by {sub.approved_by_name}</span>
-                            )}
+                            <WorkflowBadge state={sub.workflow_state} />
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {sub.workflow_state && <WorkflowBadge state={sub.workflow_state} />}
+                        <div className="submission-detail__meta">
+                            <span className="flex items-center gap-8"><Globe size={14} /> {p.network_name}</span>
+                            <span className="submission-detail__muted-pipe">|</span>
+                            <span>{p.source_location_name} → {p.destination_location_name}</span>
                         </div>
                     </div>
                 </div>
-                <div className="detail-subtitle" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                    <span>{p.mission_filename}</span>
-                    <span style={{ opacity: 0.5 }}>•</span>
-                    <span>Received {new Date(sub.created_at).toLocaleString()}</span>
-                </div>
-                
-                {/* Participant Ribbon */}
-                <div style={{ display: 'flex', gap: '24px', margin: '12px 0 24px', padding: '12px 16px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                    {sub.submitted_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Submitted by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.submitted_by_name}</div>
-                        </div>
-                    )}
-                    {sub.viewed_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Viewed by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.viewed_by_name}</div>
-                        </div>
-                    )}
-                    {sub.reviewed_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Reviewed by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.reviewed_by_name}</div>
-                        </div>
-                    )}
-                    {sub.verified_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Verified by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.verified_by_name}</div>
-                        </div>
-                    )}
-                    {sub.validated_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Validated by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.validated_by_name}</div>
-                        </div>
-                    )}
-                    {sub.approved_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>Approved by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.approved_by_name}</div>
-                        </div>
-                    )}
-                    {sub.db_updated_by_name && (
-                        <div>
-                            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>DB Updated by</div>
-                            <div style={{ fontSize: '13px', fontWeight: 500 }}>{sub.db_updated_by_name}</div>
-                        </div>
-                    )}
-                </div>
 
-                {error && <div className="banner banner-error">⚠ {error}</div>}
-                {sub.error_detail && <div className="banner banner-error">Pipeline Error: {sub.error_detail}</div>}
-
-                {/* Tab and Action Row */}
-                <div className="flex items-center justify-between border-bottom mb-24" style={{ borderBottom: '1px solid var(--border)' }}>
-                    <div className="tabs" style={{ borderBottom: 'none', marginBottom: 0 }}>
-                        {sub.payload.is_update && (
+                <div className="submission-detail__header-actions">
+                    {sub.status === 'pending' && (
+                        <RequiresRole role="reviewer">
                             <button
-                                className={`tab ${activeTab === -1 ? 'active' : ''}`}
-                                onClick={() => setActiveTab(-1)}
-                            >
-                                Changes
-                            </button>
-                        )}
-                        {TABS.map((tab, i) => {
-                            const isLocked = tab.locked && !idResolutionUnlocked;
-                            return (
-                                <button
-                                    key={tab.id}
-                                    className={`tab ${activeTab === i ? 'active' : ''}`}
-                                    onClick={() => !isLocked && setActiveTab(i)}
-                                    disabled={isLocked}
-                                    style={{
-                                        cursor: isLocked ? 'not-allowed' : 'pointer',
-                                        opacity: isLocked ? 0.5 : 1
-                                    }}
-                                >
-                                    {tab.name} {isLocked && <Lock size={12} style={{ marginLeft: 4 }} />}
-                                </button>
-                            );
-                        })}
-                    </div>
-
-                    <div className="flex gap-8 items-center" style={{ paddingBottom: '8px' }}>
-                        {sub.status === 'pending' && (
-                            <>
-                                <button className="btn btn-sm btn-ghost" onClick={handleMarkDuplicate}>
-                                    Duplicate
-                                </button>
-                                <button className="btn btn-sm btn-ghost" onClick={() => setShowRejectModal(true)} style={{ color: 'var(--danger)' }}>
-                                    Reject
-                                </button>
-                                <RequiresRole role="operator">
-                                    <button
-                                        className={`btn btn-sm ${canApprove ? 'btn-primary' : 'btn-secondary'}`}
-                                        disabled={!canApprove || approving}
-                                        onClick={handleApprove}
-                                        title={approveTooltip}
-                                    >
-                                        {approving ? 'Approving...' : 'Approve ↑'}
-                                    </button>
-                                </RequiresRole>
-                            </>
-                        )}
-                    </div>
-                </div>
-
-                {/* Tab Content */}
-                <div className="tab-content" style={{ padding: '0 24px' }}>
-                    {activeTab === -1 && sub.payload.is_update && (
-                        <div style={{ paddingTop: '24px' }} className="diff-summary">
-                            {originalRoute ? (
-                                Object.keys(FIELD_LABELS).map(key => (
-                                    <DiffDisplay
-                                        key={key}
-                                        label={FIELD_LABELS[key]}
-                                        oldValue={originalRoute[key]}
-                                        newValue={sub.payload[key]}
-                                    />
-                                ))
-                            ) : (
-                                <div className="banner banner-error">Loading original route data or none provided...</div>
-                            )}
-                        </div>
-                    )}
-                    {activeTab === 0 && (
-                        <WaypointViewerTab waypoints={waypoints} sub={sub} />
-                    )}
-                    {activeTab === 1 && (
-                        <FilesTab sub={sub} onReload={loadSubmission} />
-                    )}
-                    {activeTab === 2 && (
-                        <IDResolutionTab
-                            preview={preview}
-                            sub={sub}
-                            onReviewed={(collectedConfirmations) => {
-                                if (collectedConfirmations) {
-                                    setConfirmations(collectedConfirmations);
-                                }
-                                loadSubmission(true); // Silent reload to preserve state
-                            }}
-                        />
-                    )}
-                    {activeTab === 3 && (
-                        <ActivityLogTab submissionId={id} />
-                    )}
-                </div>
-            </div>
-
-            {/* STICKY FOOTER */}
-            {activeTab === 0 && sub.status === 'pending' && (
-                <div className="verification-footer">
-                    {!waypointVerified ? (
-                        <div className="gate-bar">
-                            <div className="gate-checks">
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={check1}
-                                        onChange={e => setCheck1(e.target.checked)}
-                                    />
-                                    Reviewed route on map
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={check2}
-                                        onChange={e => setCheck2(e.target.checked)}
-                                    />
-                                    Reviewed elevation profile
-                                </label>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={check3}
-                                        onChange={e => setCheck3(e.target.checked)}
-                                    />
-                                    Route matches source → destination
-                                </label>
-                            </div>
-                            <button
-                                className={`btn ${(check1 && check2 && check3) ? 'btn-primary' : 'btn-secondary'}`}
-                                disabled={!check1 || !check2 || !check3 || verifying}
-                                onClick={handleVerifyRoute}
-                            >
-                                {verifying ? 'Saving...' : 'Mark Route as Verified'}
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="gate-bar gate-passed">
-                            <span className="gate-passed-text">✓ Route verified — open ID Resolution tab to continue</span>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Reject Modal */}
-            {showRejectModal && (
-                <div className="modal-overlay">
-                    <div className="modal">
-                        <h3>Reject Submission</h3>
-                        <p>Provide a reason for rejection (minimum 10 characters).</p>
-                        <textarea
-                            placeholder="Reason for rejection (required)"
-                            value={rejectReason}
-                            onChange={e => setRejectReason(e.target.value)}
-                            rows={3}
-                        />
-                        <div className="modal-actions">
-                            <button className="btn" onClick={() => setShowRejectModal(false)}>Cancel</button>
-                            <button
-                                className="btn btn-danger"
-                                onClick={handleReject}
-                                disabled={rejectReason.length < 10}
+                                type="button"
+                                onClick={() => setShowRejectModal(true)}
+                                className="submission-detail__reject"
                             >
                                 Reject
                             </button>
+                        </RequiresRole>
+                    )}
+                    <button type="button" onClick={() => loadSubmission()} className="submission-detail__icon-btn" aria-label="Refresh">
+                        <RefreshCw size={18} />
+                    </button>
+                </div>
+            </div>
+
+            {error && (
+                <div className="submission-detail__alert">
+                    <AlertCircle size={16} /> {error}
+                </div>
+            )}
+
+            {!isPipelineComplete && !isRejected && (
+                <div className="submission-detail__auth-bar">
+                    <span className="submission-detail__auth-bar-label">Review</span>
+                    <div className="submission-detail__auth-bar-steps">
+                        <div className="submission-detail__auth-bar-step">
+                            <span style={{ fontWeight: 700, color: 'var(--text)' }}>1. Waypoints</span>
+                            {waypointVerified ? (
+                                <CheckCircle2 style={{ color: 'var(--success)' }} size={18} />
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={handleVerifyRoute}
+                                    className="submission-detail__btn-sm"
+                                    disabled={!allWaypointChecksDone}
+                                    title={!allWaypointChecksDone ? 'Complete waypoint verification checklist first' : undefined}
+                                >
+                                    Verify
+                                </button>
+                            )}
+                        </div>
+                        <div className="submission-detail__auth-bar-step">
+                            <span style={{ fontWeight: 700, color: 'var(--text)' }}>2. IDs</span>
+                            {idResolutionReviewed ? (
+                                <CheckCircle2 style={{ color: 'var(--success)' }} size={18} />
+                            ) : (
+                                <button
+                                    type="button"
+                                    disabled={!waypointVerified}
+                                    onClick={() => selectTab(3)}
+                                    className="submission-detail__btn-sm"
+                                >
+                                    Resolve
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                    <div className="submission-detail__auth-bar-actions">
+                        <RequiresRole role="reviewer">
+                            <button
+                                type="button"
+                                onClick={handleApprove}
+                                disabled={!waypointVerified || !idResolutionReviewed || approving}
+                                className="submission-detail__approve submission-detail__approve--compact"
+                            >
+                                {approving ? <RefreshCw className="spin" size={18} /> : <CheckCircle size={18} />}
+                                {approving ? 'EXECUTING…' : 'EXECUTE DB UPDATE'}
+                            </button>
+                        </RequiresRole>
+                    </div>
+                </div>
+            )}
+
+            <div className="submission-detail__tabs submission-detail__tabs--primary">
+                <div className="submission-detail__tab-bar">
+                    {TABS.map((tab, i) => (
+                        <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => selectTab(i)}
+                            className={`submission-detail__tab ${activeTab === i ? 'submission-detail__tab--active' : ''}`}
+                        >
+                            {tab.name}
+                        </button>
+                    ))}
+                </div>
+                <div className="submission-detail__tab-panel submission-detail__tab-panel--main custom-scrollbar">
+                    {activeTab === 0 && (
+                        <div className="submission-detail__col">
+                            {p.is_update && originalRoute && (
+                                <div className="submission-detail__card">
+                                    <div className="submission-detail__card-head">
+                                        <h3 className="submission-detail__card-title">Proposed Changes</h3>
+                                        <div className="flex items-center gap-8" style={{ fontSize: '10px', fontWeight: 700, color: 'var(--primary)' }}>
+                                            <History size={12} /> Diff Engine
+                                        </div>
+                                    </div>
+                                    <div className="submission-detail__card-body">
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                            {Object.keys(FIELD_LABELS).map(key => (
+                                                <DiffDisplay
+                                                    key={key}
+                                                    field={key}
+                                                    label={FIELD_LABELS[key]}
+                                                    oldValue={originalRoute[key]}
+                                                    newValue={p[key]}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="submission-detail__card">
+                                <div className="submission-detail__card-head submission-detail__card-head--simple">
+                                    <h3 className="submission-detail__card-title">Submission Parameters</h3>
+                                </div>
+                                <div className="submission-detail__card-body submission-detail__params">
+                                    {Object.entries(FIELD_LABELS).map(([key, label]) => (
+                                        <div key={key} className="submission-detail__field">
+                                            <span className="submission-detail__field-label">{label}</span>
+                                            <span className="submission-detail__field-value" title={p[key]}>
+                                                {p[key] || '—'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {activeTab === 1 && (
+                        <HoveredWaypointProvider>
+                            <WaypointViewerTab
+                                sub={sub}
+                                waypoints={waypoints}
+                                verification={waypointVerification}
+                                setVerification={setWaypointVerification}
+                            />
+                        </HoveredWaypointProvider>
+                    )}
+                    {activeTab === 2 && (
+                        <FilesTab sub={sub} onReload={() => loadSubmission(true)} />
+                    )}
+                    {activeTab === 3 && (
+                        <IDResolutionTab
+                            sub={sub}
+                            preview={preview}
+                            onReviewed={() => loadSubmission(true)}
+                        />
+                    )}
+                    {activeTab === 4 && <ActivityLogTab submissionId={submissionId} />}
+                </div>
+            </div>
+
+            {showRejectModal && (
+                <div className="submission-detail__modal-overlay">
+                    <div className="submission-detail__modal">
+                        <h3 className="submission-detail__modal-title">Reject Submission</h3>
+                        <p className="submission-detail__modal-text">Explain why this submission is being rejected. This will be visible to the operator.</p>
+
+                        <textarea
+                            value={rejectReason}
+                            onChange={(e) => setRejectReason(e.target.value)}
+                            className="submission-detail__textarea"
+                            placeholder="e.g. Mission file has incorrect waypoints, please re-upload."
+                        />
+
+                        <div className="submission-detail__modal-actions">
+                            <button
+                                type="button"
+                                onClick={() => setShowRejectModal(false)}
+                                className="btn"
+                                style={{ flex: 1 }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleReject}
+                                disabled={rejectReason.length < 10}
+                                className="btn btn-danger"
+                                style={{ flex: 1 }}
+                            >
+                                Confirm Rejection
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+export default function SubmissionDetail({ id: propId, embedded = false }) {
+    const routeParams = useParams();
+    const navigate = useNavigate();
+    const submissionId = propId || routeParams.id;
+
+    if (!submissionId) {
+        return null;
+    }
+
+    if (embedded) {
+        return (
+            <SubmissionDetailContent submissionId={submissionId} onBack={null} embedded />
+        );
+    }
+
+    return (
+        <div className="submission-detail-page-wrap">
+            <SubmissionDetailContent submissionId={submissionId} onBack={() => navigate(-1)} embedded={false} />
         </div>
     );
 }

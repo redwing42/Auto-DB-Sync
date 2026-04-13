@@ -9,7 +9,7 @@ If you want to use a different Google Sheet for your flight route submissions, f
 
 ### 2. Update Configuration
 In the script editor of the new sheet, check these variables at the top:
-* `WEBHOOK_URL`: Ensure this matches your backend's current URL (e.g., your ngrok URL).
+* `WEBHOOK_URL`: Ensure this matches your backend's current deployment URL.
 * `WEBHOOK_SECRET`: Ensure this matches the `WEBHOOK_SECRET` in your backend's `.env` file.
 
 ### 3. Set Up the Trigger

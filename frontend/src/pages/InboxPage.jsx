@@ -169,6 +169,39 @@ export default function InboxPage() {
                 <button className="btn" onClick={() => fetchSubmissions()}>↻ Refresh</button>
             </div>
 
+            <div className="tabs">
+                <button
+                    className={`tab ${!statusFilter ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions')}
+                >
+                    All
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'pending' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=pending')}
+                >
+                    Pending
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'approved' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=approved')}
+                >
+                    Approved
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'rejected' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=rejected')}
+                >
+                    Rejected
+                </button>
+                <button
+                    className={`tab ${statusFilter === 'failed' ? 'active' : ''}`}
+                    onClick={() => navigate('/submissions?status=failed')}
+                >
+                    Failed
+                </button>
+            </div>
+
             {error && <div className="banner banner-error">⚠ {error}</div>}
 
             {filtered.length === 0 ? (
@@ -207,11 +240,7 @@ export default function InboxPage() {
                                         {sub.payload.destination_location_name}
                                     </span>
                                     {sub.payload.is_update && (
-                                        <span style={{
-                                            marginLeft: '8px', fontSize: '0.65rem', fontWeight: 600,
-                                            padding: '2px 6px', borderRadius: '4px',
-                                            backgroundColor: '#e0f2fe', color: '#0369a1', border: '1px solid #bae6fd'
-                                        }}>
+                                        <span className="submission-type-badge update" style={{ marginLeft: '8px' }}>
                                             UPDATE
                                         </span>
                                     )}
@@ -229,7 +258,10 @@ export default function InboxPage() {
                                 </td>
                                 <td>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                        <StatusBadge status={sub.status} />
+                                        <StatusBadge 
+                                            status={sub.status} 
+                                            reason={sub.status_metadata?.rejection_reason || sub.status_metadata?.error} 
+                                        />
                                         <WorkflowBadge state={sub.workflow_state} />
                                     </div>
                                 </td>

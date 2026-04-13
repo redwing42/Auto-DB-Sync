@@ -1,103 +1,111 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../api/api';
+import { Clock, User, CheckCircle, XCircle, Info, Zap, Mail, GitBranch } from 'lucide-react';
 
-function getInitials(name) {
-    if (!name) return '?';
-    const parts = name.split(' ');
-    if (parts.length >= 2) {
-        return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return name[0].toUpperCase();
-}
-
-function RelativeTime({ timestamp }) {
-    const [text, setText] = useState('');
-
-    useEffect(() => {
-        const update = () => {
-            const now = new Date();
-            const then = new Date(timestamp);
-            const diff = Math.max(0, now - then);
-            const mins = Math.floor(diff / 60000);
-            if (mins < 1) setText('just now');
-            else if (mins < 60) setText(`${mins}m ago`);
-            else {
-                const hrs = Math.floor(mins / 60);
-                if (hrs < 24) setText(`${hrs}h ago`);
-                else setText(then.toLocaleDateString());
-            }
-        };
-        update();
-        const interval = setInterval(update, 60000);
-        return () => clearInterval(interval);
-    }, [timestamp]);
-
-    return <span>{text}</span>;
-}
+const ACTION_ICONS = {
+    SUBMISSION_CREATED: { icon: Info, color: 'var(--primary)' },
+    GATE1_PASSED: { icon: CheckCircle, color: 'var(--success)' },
+    GATE1_FAILED: { icon: XCircle, color: 'var(--danger)' },
+    GATE2_CONFIRMED: { icon: CheckCircle, color: 'var(--success)' },
+    APPROVED: { icon: Zap, color: 'var(--success)' },
+    REJECTED: { icon: XCircle, color: 'var(--danger)' },
+    RESUBMITTED: { icon: Clock, color: 'var(--primary)' },
+    BRANCH_CREATED: { icon: GitBranch, color: 'var(--primary)' },
+    EMAIL_FAILED: { icon: Mail, color: 'var(--danger)' },
+    PIPELINE_COMPLETE: { icon: CheckCircle, color: 'var(--success)' },
+    PIPELINE_FAILED: { icon: XCircle, color: 'var(--danger)' },
+};
 
 export default function ActivityLogTab({ submissionId }) {
     const [logs, setLogs] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
 
     useEffect(() => {
-        const fetchLogs = async () => {
-            try {
-                const data = await api.getAuditLog(submissionId);
-                setLogs(data);
-            } catch (err) {
-                setError(err.message);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchLogs();
+        if (submissionId) {
+            api.getAuditLog(submissionId)
+                .then(setLogs)
+                .catch(err => console.error('Failed to load logs:', err))
+                .finally(() => setLoading(false));
+        }
     }, [submissionId]);
 
-    if (loading) return <div className="p-24 text-muted">Loading activity log...</div>;
-    if (error) return <div className="banner banner-error">{error}</div>;
-    if (logs.length === 0) return <div className="p-24 text-muted">No activity recorded yet.</div>;
+    if (loading) {
+        return (
+            <div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 14 }}>
+                Loading activity log...
+            </div>
+        );
+    }
+
+    if (logs.length === 0) {
+        return (
+            <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                No activity recorded for this submission
+            </div>
+        );
+    }
 
     return (
-        <div className="activity-timeline">
-            {logs.map((log, i) => (
-                <div key={log.id} className="timeline-item">
-                    <div className="timeline-marker">
-                        <div className="avatar-circle">
-                            {getInitials(log.performed_by_name || 'System')}
-                        </div>
-                        {i < logs.length - 1 && <div className="timeline-line" />}
-                    </div>
-                    <div className="timeline-content">
-                        <div className="timeline-header">
-                            <span className="actor-name">{log.performed_by_name || 'System'}</span>
-                            {log.performed_by_role && (
-                                <span className="role-badge">{log.performed_by_role}</span>
-                            )}
-                            <span className="dot-separator">•</span>
-                            <span className="timestamp">
-                                <RelativeTime timestamp={log.timestamp_utc} />
-                            </span>
-                        </div>
-                        <div className="action-type">
-                            {log.action_type.replace(/_/g, ' ')}
-                        </div>
-                        {log.metadata && (
-                            <div className="log-metadata">
-                                {log.metadata.reason && (
-                                    <div className="metadata-reason">"{log.metadata.reason}"</div>
-                                )}
-                                {log.metadata.branch_name && (
-                                    <div className="metadata-branch">Branch: <code>{log.metadata.branch_name}</code></div>
-                                )}
-                                {log.metadata.error && (
-                                    <div className="metadata-error">Error: {log.metadata.error}</div>
+        <div style={{ position: 'relative', padding: '12px' }}>
+            {/* Timeline Line */}
+            <div style={{ 
+                position: 'absolute', left: '27px', top: '24px', bottom: '24px', 
+                width: '1px', background: 'var(--border)', zIndex: 0 
+            }} />
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                {logs.map((log) => {
+                    const Config = ACTION_ICONS[log.action_type] || { icon: Info, color: 'var(--text-muted)' };
+                    const Icon = Config.icon;
+                    const date = new Date(log.timestamp_utc);
+
+                    return (
+                        <div key={log.id} style={{ display: 'flex', gap: '16px', position: 'relative', zIndex: 1 }}>
+                            <div style={{ 
+                                width: '30px', height: '30px', borderRadius: '50%', background: 'var(--surface)', 
+                                border: `1px solid ${Config.color}`, display: 'flex', alignItems: 'center', 
+                                justifyContent: 'center', flexShrink: 0 
+                            }}>
+                                <Icon size={16} style={{ color: Config.color }} />
+                            </div>
+                            
+                            <div style={{ flexGrow: 1 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                    <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text)', textTransform: 'capitalize' }}>
+                                        {log.action_type.toLowerCase().replace(/_/g, ' ')}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                                        {date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                                    </div>
+                                </div>
+                                
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                    <User size={12} />
+                                    <span>{log.performed_by_name} ({log.performed_by_role})</span>
+                                </div>
+
+                                {log.metadata && Object.keys(log.metadata).length > 0 && (
+                                    <div style={{ 
+                                        marginTop: '10px', padding: '10px', background: 'var(--bg)', 
+                                        borderRadius: '6px', border: '1px solid var(--border)', fontSize: '12px'
+                                    }}>
+                                        {log.metadata.reason && (
+                                            <div style={{ color: 'var(--text-secondary)' }}>
+                                                <strong>Reason:</strong> {log.metadata.reason}
+                                            </div>
+                                        )}
+                                        {log.metadata.branch_name && (
+                                            <div style={{ fontFamily: 'monospace', color: 'var(--primary)' }}>
+                                                git branch: {log.metadata.branch_name}
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
                             </div>
-                        )}
-                    </div>
-                </div>
-            ))}
+                        </div>
+                    );
+                })}
+            </div>
         </div>
     );
 }

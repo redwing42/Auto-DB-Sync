@@ -7,6 +7,8 @@ resolve preview, and approval pipeline.
 from __future__ import annotations
 
 import logging
+import sqlite3
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -26,6 +28,7 @@ from models import (
     AuditRecord,
     DownloadResult,
     DownloadStatus,
+    DraftResponse,
     DuplicateCheckResponse,
     LandingZoneInfo,
     LocationInfo,
@@ -38,6 +41,8 @@ from models import (
     SubmissionPayload,
     SubmissionResponse,
     SubmissionStatus,
+    SubmissionType,
+    UpdateSubmissionPayload,
     ValidationResponse,
     WaypointFileResponse,
     WorkflowState,
@@ -127,6 +132,11 @@ def init_app() -> None:
 @app.on_event("startup")
 async def startup_event():
     init_app()
+    # Phase 4: Clean up stale drafts older than 7 days
+    store = get_store()
+    stale_count = store.soft_delete_stale_drafts(days=7)
+    if stale_count > 0:
+        logger.info(f"Soft-deleted {stale_count} stale draft(s) older than 7 days")
 
 
 # ── Auth Helper ──────────────────────────────────────────────────────────────
@@ -192,8 +202,10 @@ async def webhook_new_submission(
     )
 
     logger.info(f"New submission received: {submission_id} (Status: {status})")
+    sub = store.get_submission(submission_id)
     return {
         "submission_id": submission_id,
+        "human_id": sub.human_id if sub else f"#{submission_id[:8]}",
         "status": status.value,
         "warnings": validation.warnings,
     }
@@ -218,10 +230,10 @@ async def create_submission(
             "warnings": validation.warnings,
         })
 
-    # Check for duplicate in Excel
+    # Check for duplicate in Excel (only for new routes)
     status = SubmissionStatus.PENDING
 
-    if settings.excel_path.exists():
+    if not payload.is_update and settings.excel_path.exists():
         updater = ExcelUpdater(settings.excel_path)
         try:
             updater.open()
@@ -233,13 +245,26 @@ async def create_submission(
         finally:
             updater.close()
 
+    # Phase 4: Determine submission type and changed_fields
+    submission_type = "UPDATE" if payload.is_update else "NEW_ROUTE"
+    changed_fields_json = None
+    parent_submission_id = None
+    if isinstance(payload, UpdateSubmissionPayload):
+        import json as _json
+        if payload.changed_fields:
+            changed_fields_json = _json.dumps(payload.changed_fields)
+        parent_submission_id = payload.parent_submission_id
+
     submission_id = store.add_submission(
         payload, 
         status=status, 
         user_uid=user['uid'], 
         source="ui",
         submitted_by_name=user.get('display_name', user['email']),
-        submitted_by_role=user.get('role', 'operator')
+        submitted_by_role=user.get('role', 'operator'),
+        submission_type=submission_type,
+        changed_fields=changed_fields_json,
+        parent_submission_id=parent_submission_id,
     )
     
     # Phase 3: Audit & Notification
@@ -250,7 +275,7 @@ async def create_submission(
         performed_by_uid=user['uid'],
         performed_by_name=user.get('display_name', user['email']),
         performed_by_role=user.get('role', 'operator'),
-        metadata={"source": "ui"}
+        metadata={"source": "ui", "submission_type": submission_type}
     )
     
     email_service.send_submission_notification(
@@ -260,9 +285,11 @@ async def create_submission(
         submitter_role=user.get('role', 'operator')
     )
 
-    logger.info(f"UI submission created: {submission_id} by {user['email']}")
+    logger.info(f"UI submission created: {submission_id} by {user['email']} ({submission_type})")
+    sub = store.get_submission(submission_id)
     return {
         "submission_id": submission_id,
+        "human_id": sub.human_id if sub else f"#{submission_id[:8]}",
         "status": status.value,
         "warnings": validation.warnings,
     }
@@ -318,12 +345,20 @@ async def check_duplicate(
             and p.takeoff_direction == payload.takeoff_direction
             and p.approach_direction == payload.approach_direction
         ):
+            # If it's an update, don't flag against approved submissions (we are updating them!)
+            if payload.is_update and sub.status == SubmissionStatus.APPROVED:
+                continue
+
             result.is_exact_duplicate = True
             result.exact_match_id = sub.id
             result.message = f"Exact duplicate of submission #{sub.id[:8]} ({sub.status.value})"
             return result
 
-    # 2. Check flights.db for already-approved routes
+    # 2. Check flights.db for already-approved routes (only for new routes)
+    if payload.is_update:
+        result.message = "Update submission - bypassing duplicate check against existing routes."
+        return result
+
     flights_db = settings.instance_dir / "flights.db"
     if flights_db.exists():
         try:
@@ -589,8 +624,29 @@ async def list_locations(
     conn = _sqlite3.connect(str(flights_db))
     conn.row_factory = _sqlite3.Row
     try:
-        rows = conn.execute("SELECT id, name, code, COALESCE(landing_zone_count, 0) as landing_zone_count FROM locations ORDER BY name").fetchall()
+        rows = conn.execute("SELECT id, name, code, location_type, COALESCE(landing_zone_count, 0) as landing_zone_count FROM locations ORDER BY name").fetchall()
         return [LocationInfo(**dict(r)) for r in rows]
+    finally:
+        conn.close()
+        
+@app.patch("/locations/{location_id}")
+async def patch_location(
+    location_id: int,
+    updates: dict,
+    settings: Settings = Depends(get_settings),
+    _auth: dict = Depends(require_role('reviewer')),
+):
+    """Update location metadata like type (Hub/Node)."""
+    import sqlite3 as _sqlite3
+    flights_db = settings.instance_dir / "flights.db"
+    
+    conn = _sqlite3.connect(str(flights_db))
+    try:
+        if "location_type" in updates:
+            conn.execute("UPDATE locations SET location_type = ? WHERE id = ?", (updates["location_type"], location_id))
+            conn.commit()
+            return {"status": "success"}
+        raise HTTPException(status_code=400, detail="No valid fields to update")
     finally:
         conn.close()
 
@@ -1027,10 +1083,14 @@ async def get_stats(
         "active_routes": 0,
         "total_locations": 0,
         "total_landing_zones": 0,
+        "total_networks": 0,
         "routes_per_network": [],
         "lz_per_location": [],
         "submission_statuses": {},
         "recent_approved": [],
+        "db_last_sync_at": None,
+        "db_last_sync_by": None,
+        "excel_last_modified_at": None,
     }
 
     # ── flights.db stats ─────────────────────────────────────────────────
@@ -1043,7 +1103,15 @@ async def get_stats(
             # Total & active routes
             row = conn.execute("SELECT COUNT(*) as c FROM flight_routes").fetchone()
             result["total_routes"] = row["c"] if row else 0
-            result["active_routes"] = result["total_routes"]  # assume all active
+
+            # Active routes (status=1 or status='true')
+            try:
+                row_active = conn.execute(
+                    "SELECT COUNT(*) as c FROM flight_routes WHERE status=1 OR status='true'"
+                ).fetchone()
+                result["active_routes"] = row_active["c"] if row_active else result["total_routes"]
+            except Exception:
+                result["active_routes"] = result["total_routes"]
 
             row = conn.execute("SELECT COUNT(*) as c FROM locations").fetchone()
             result["total_locations"] = row["c"] if row else 0
@@ -1051,15 +1119,30 @@ async def get_stats(
             row = conn.execute("SELECT COUNT(*) as c FROM landing_zones").fetchone()
             result["total_landing_zones"] = row["c"] if row else 0
 
-            # Routes per network
+            # Total networks
+            try:
+                row_net = conn.execute("SELECT COUNT(*) as c FROM networks").fetchone()
+                result["total_networks"] = row_net["c"] if row_net else 0
+            except Exception:
+                pass
+
+            # Routes per network with active/inactive split
             try:
                 rows = conn.execute(
-                    "SELECT n.name, COUNT(fr.id) as cnt "
+                    "SELECT n.name, "
+                    "COUNT(fr.id) as cnt, "
+                    "SUM(CASE WHEN fr.status=1 OR fr.status='true' THEN 1 ELSE 0 END) as active_cnt "
                     "FROM flight_routes fr JOIN networks n ON fr.network_id = n.id "
                     "GROUP BY n.name ORDER BY cnt DESC"
                 ).fetchall()
                 result["routes_per_network"] = [
-                    {"name": r["name"], "count": r["cnt"]} for r in rows
+                    {
+                        "name": r["name"],
+                        "count": r["cnt"],
+                        "active": r["active_cnt"] if r["active_cnt"] else r["cnt"],
+                        "inactive": r["cnt"] - (r["active_cnt"] if r["active_cnt"] else r["cnt"]),
+                    }
+                    for r in rows
                 ]
             except Exception:
                 pass
@@ -1081,6 +1164,17 @@ async def get_stats(
         except Exception as e:
             logger.warning("Stats: failed to read flights.db: %s", e)
 
+    # ── Excel last modified ──────────────────────────────────────────────
+    import os
+    excel_path = settings.instance_dir / "Flight_data_updated.xlsx"
+    if excel_path.exists():
+        try:
+            mtime = os.path.getmtime(str(excel_path))
+            from datetime import datetime, timezone
+            result["excel_last_modified_at"] = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+
     # ── submissions.db stats ─────────────────────────────────────────────
     try:
         subs = store.list_submissions()
@@ -1091,12 +1185,20 @@ async def get_stats(
             if s.status.value == "approved" and len(recent) < 10:
                 recent.append({
                     "id": s.id,
+                    "human_id": s.human_id,
                     "route": f"{s.payload.source_location_name} → {s.payload.destination_location_name}",
                     "mission_file": s.payload.mission_filename,
                     "created_at": s.created_at,
                 })
         result["submission_statuses"] = status_counts
         result["recent_approved"] = recent
+
+        # Find last PIPELINE_COMPLETE audit for db_last_sync
+        for s in subs:
+            if s.workflow_state == "PIPELINE_COMPLETE":
+                result["db_last_sync_at"] = s.updated_at or s.created_at
+                result["db_last_sync_by"] = getattr(s, 'approved_by_name', None) or getattr(s, 'db_updated_by_name', None)
+                break
     except Exception as e:
         logger.warning("Stats: failed to read submissions: %s", e)
 
@@ -1129,6 +1231,299 @@ async def get_cesium_token(settings: Settings = Depends(get_settings), user: dic
     return {"token": settings.CESIUM_ION_TOKEN}
 
 
+# ── DRAFTS (Phase 4) ────────────────────────────────────────────────────────
+
+class DraftSaveRequest(BaseModel):
+    payload_json: str
+    submission_type: str = "NEW_ROUTE"
+    draft_id: Optional[str] = None
+    parent_submission_id: Optional[str] = None
+    label: Optional[str] = None
+
+
+@app.post("/drafts", response_model=dict)
+async def save_draft(
+    body: DraftSaveRequest,
+    store: SubmissionStore = Depends(get_store),
+    audit_store: AuditStore = Depends(get_audit_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Save or update a draft submission."""
+    draft_id = store.save_draft(
+        user_uid=user['uid'],
+        payload_json=body.payload_json,
+        submission_type=body.submission_type,
+        draft_id=body.draft_id,
+        parent_submission_id=body.parent_submission_id,
+        label=body.label,
+    )
+    audit_store.add_record(
+        draft_id,
+        AuditActionType.DRAFT_SAVED,
+        performed_by_uid=user['uid'],
+        performed_by_name=user.get('display_name', user['email']),
+        performed_by_role=user.get('role', 'operator'),
+    )
+    return {"draft_id": draft_id}
+
+
+@app.get("/drafts", response_model=List[DraftResponse])
+async def list_drafts(
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """List all drafts for the current user."""
+    return store.get_drafts_by_user(user['uid'])
+
+
+@app.get("/drafts/{draft_id}", response_model=DraftResponse)
+async def get_draft(
+    draft_id: str,
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Get a specific draft by ID."""
+    draft = store.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft.created_by_uid != user['uid']:
+        raise HTTPException(status_code=403, detail="Not your draft")
+    return draft
+
+
+@app.delete("/drafts/{draft_id}")
+async def delete_draft(
+    draft_id: str,
+    store: SubmissionStore = Depends(get_store),
+    audit_store: AuditStore = Depends(get_audit_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Soft-delete a draft."""
+    draft = store.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft.created_by_uid != user['uid']:
+        raise HTTPException(status_code=403, detail="Not your draft")
+    store.delete_draft(draft_id, user['uid'])
+    audit_store.add_record(
+        draft_id,
+        AuditActionType.DRAFT_DELETED,
+        performed_by_uid=user['uid'],
+        performed_by_name=user.get('display_name', user['email']),
+        performed_by_role=user.get('role', 'operator'),
+    )
+    return {"status": "deleted"}
+
+
+# ── RESUBMISSION HYDRATION ──────────────────────────────────────────────────
+
+@app.get("/submissions/{submission_id}/resubmit-data")
+async def get_resubmit_data(
+    submission_id: str,
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Hydration endpoint: returns a rejected submission's payload for resubmission."""
+    sub = store.get_submission(submission_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if sub.status != SubmissionStatus.REJECTED:
+        raise HTTPException(status_code=400, detail="Only rejected submissions can be resubmitted")
+    return {
+        "parent_submission_id": submission_id,
+        "submission_type": sub.submission_type,
+        "payload": sub.payload.model_dump(),
+        "changed_fields": sub.changed_fields,
+        "rejection_reason": sub.rejection_reason,
+    }
+
+
+@app.get("/stats/team-activity")
+async def get_team_activity_stats(
+    audit_store: AuditStore = Depends(get_audit_store),
+    user: dict = Depends(require_role('reviewer')),
+):
+    """Return team-wide activity stats for the dashboard."""
+    return audit_store.get_team_activity()
+
+
+@app.get("/network-map")
+async def get_network_map(
+    settings: Settings = Depends(get_settings),
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Return hub-node route groups and locations for the network map."""
+    flights_db = settings.instance_dir / "flights.db"
+    
+    route_groups = {}
+    locations = []
+    lzs = []
+    pending_submissions = []
+
+    if flights_db.exists():
+        conn = sqlite3.connect(flights_db)
+        conn.row_factory = sqlite3.Row
+        
+        # Get all locations and map type
+        loc_rows = conn.execute("""
+            SELECT l.id, l.name, l.code, l.location_type,
+                   AVG(lz.latitude) as latitude, AVG(lz.longitude) as longitude
+            FROM locations l
+            LEFT JOIN landing_zones lz ON lz.location_id = l.id
+            GROUP BY l.id, l.name, l.code, l.location_type
+        """).fetchall()
+        locations = [dict(l) for l in loc_rows]
+        loc_type_map = {l['id']: l['location_type'] for l in locations}
+        loc_name_map = {l['id']: l['name'] for l in locations}
+        
+        # Get all LZs
+        lz_rows = conn.execute("""
+            SELECT lz.id, lz.name, lz.latitude, lz.longitude, l.name as location_name
+            FROM landing_zones lz
+            JOIN locations l ON lz.location_id = l.id
+        """).fetchall()
+        lzs = [dict(lz) for lz in lz_rows]
+
+        # Get all routes (Active and Inactive)
+        routes_query = """
+            SELECT 
+                r.id, r.network_id, n.name as network_name,
+                r.start_location_id, r.end_location_id,
+                lz1.name as start_lz_name, lz2.name as end_lz_name,
+                lz1.latitude as start_latitude, lz1.longitude as start_longitude,
+                lz2.latitude as end_latitude, lz2.longitude as end_longitude,
+                wf.filename as mission_filename, r.status,
+                r.takeoff_direction, r.approach_direction
+            FROM flight_routes r
+            JOIN networks n ON r.network_id = n.id
+            JOIN landing_zones lz1 ON r.start_lz_id = lz1.id
+            JOIN landing_zones lz2 ON r.end_lz_id = lz2.id
+            LEFT JOIN waypoint_files wf ON r.waypoint_file_id = wf.id
+        """
+        routes_rows = conn.execute(routes_query).fetchall()
+        
+        # Fetch approved sub snapshots for latest_submission_id & metadata
+        # We fetch all approved subs and map them to routes
+        approved_subs = []
+        for s in store.list_submissions():
+            if s.status == SubmissionStatus.APPROVED:
+                approved_subs.append(s)
+        
+        # Mapping: route_id -> latest_approved_sub
+        route_to_sub = {}
+        for s in approved_subs:
+            rid = s.payload.update_for_route_id
+            if rid:
+                if rid not in route_to_sub or s.created_at > route_to_sub[rid].created_at:
+                    route_to_sub[rid] = s
+            else:
+                # Match by filename
+                fname = s.payload.mission_filename
+                # We'll match this later during route iteration
+        
+        for r_row in routes_rows:
+            r = dict(r_row)
+            sid = r['start_location_id']
+            eid = r['end_location_id']
+            
+            # Identify Hub and Node
+            if loc_type_map.get(sid) == 'HUB':
+                hub_id, node_id = sid, eid
+                direction = "HUB_TO_NODE"
+            elif loc_type_map.get(eid) == 'HUB':
+                hub_id, node_id = eid, sid
+                direction = "NODE_TO_HUB"
+            else:
+                # Fallback to ID sort if neither/both are hubs
+                hub_id, node_id = (sid, eid) if sid < eid else (eid, sid)
+                direction = "HUB_TO_NODE" if sid == hub_id else "NODE_TO_HUB"
+
+            group_key = f"{hub_id}-{node_id}"
+            if group_key not in route_groups:
+                route_groups[group_key] = {
+                    "hub_location_id": hub_id,
+                    "hub_location_name": loc_name_map.get(hub_id),
+                    "node_location_id": node_id,
+                    "node_location_name": loc_name_map.get(node_id),
+                    "network_id": r['network_id'],
+                    "network_name": r['network_name'],
+                    "start_latitude": r['start_latitude'], # Reference points for drawing
+                    "start_longitude": r['start_longitude'],
+                    "end_latitude": r['end_latitude'],
+                    "end_longitude": r['end_longitude'],
+                    "routes": []
+                }
+            
+            # Variant extraction (L01/L02)
+            fname = r['mission_filename'] or ""
+            variant = "L01" if fname.startswith("L01_") else "L02" if fname.startswith("L02_") else "Unknown"
+            
+            # Find latest submission
+            latest_sub = route_to_sub.get(r['id'])
+            if not latest_sub:
+                # Search by filename in approved_subs
+                for s in approved_subs:
+                    if s.payload.mission_filename == fname:
+                        if not latest_sub or s.created_at > latest_sub.created_at:
+                            latest_sub = s
+            
+            route_groups[group_key]["routes"].append({
+                "id": r['id'],
+                "mission_filename": fname,
+                "direction": direction,
+                "variant": variant,
+                "start_lz_name": r['start_lz_name'],
+                "end_lz_name": r['end_lz_name'],
+                "start_location_type": loc_type_map.get(sid, 'NODE'),
+                "end_location_type": loc_type_map.get(eid, 'NODE'),
+                "status": "ACTIVE" if r['status'] == 1 else "INACTIVE",
+                "last_updated": latest_sub.created_at if latest_sub else None,
+                "last_updated_by": latest_sub.approved_by_name if latest_sub else None,
+                "latest_submission_id": latest_sub.id if latest_sub else None,
+                "takeoff_direction": r.get('takeoff_direction'),
+                "approach_direction": r.get('approach_direction')
+            })
+
+        conn.close()
+
+    all_subs = store.list_submissions()
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    now = datetime.now(timezone.utc).isoformat()
+    
+    for sub in all_subs:
+        sub_time = datetime.fromisoformat(sub.created_at.replace('Z', '+00:00'))
+        if sub.status == SubmissionStatus.PENDING and sub_time >= week_ago:
+            pending_submissions.append({
+                "id": sub.id,
+                "route": f"{sub.payload.source_location_name} → {sub.payload.destination_location_name}",
+                "start_latitude": sub.payload.source_latitude,
+                "start_longitude": sub.payload.source_longitude,
+                "end_latitude": sub.payload.destination_latitude,
+                "end_longitude": sub.payload.destination_longitude,
+                "created_at": sub.created_at,
+                "submitted_by": sub.submitted_by_name
+            })
+
+    # Stats: total active routes, hub-node pairs, pending
+    total_active = 0
+    for group in route_groups.values():
+        total_active += sum(1 for r in group['routes'] if r['status'] == 'ACTIVE')
+
+    return {
+        "route_groups": list(route_groups.values()),
+        "locations": locations,
+        "landing_zones": lzs,
+        "pending_submissions": pending_submissions,
+        "stats": {
+            "total_active": total_active,
+            "pair_count": len(route_groups),
+            "pending_count": len(pending_submissions),
+            "last_sync": now
+        }
+    }
+
+
 # ── Health Check ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -1156,23 +1551,200 @@ async def health(settings: Settings = Depends(get_settings)):
     except Exception as e:
         comp_status["excel"] = f"error: {str(e)}"
         
-    # Check Ngrok
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get("http://localhost:4040/api/tunnels", timeout=2.0)
-            if resp.status_code == 200:
-                tunnels = resp.json().get('tunnels', [])
-                if any(t.get('public_url') == f"https://{settings.NGROK_DOMAIN}" for t in tunnels):
-                    comp_status["ngrok"] = "ok"
-                else:
-                    comp_status["ngrok"] = "tunnel_missing_or_mismatch"
-            else:
-                comp_status["ngrok"] = "api_error"
-    except Exception:
-        comp_status["ngrok"] = "unreachable"
-
     return {
         "status": "ok",
         "service": "redwing-db-automation",
         "components": comp_status
     }
+
+
+# ── 15. Route Tracker — AUTHORITATIVE LOG ─────────────────────────────────────
+
+@app.get("/route-tracker")
+async def get_route_tracker(
+    event_type: Optional[str] = None,
+    network_id: Optional[int] = None,
+    days: Optional[int] = None,
+    search: Optional[str] = None,
+    _auth: dict = Depends(require_role('sde')),
+    audit_store: AuditStore = Depends(get_audit_store),
+    settings: Settings = Depends(get_settings)
+):
+    """AUTHORITATIVE log of flights.db updates (PIPELINE_COMPLETE)."""
+    return audit_store.get_route_tracker_data(
+        submissions_db_path=settings.SUBMISSIONS_DB_PATH,
+        event_type=event_type,
+        network_id=network_id,
+        days=days,
+        search=search
+    )
+
+
+# Backwards-compatible Admin aliases for spec-compliant endpoints
+
+@app.patch("/admin/users/{uid}/role")
+async def patch_admin_user_role(
+    uid: str,
+    body: dict,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Update only the user's role (Admin only). Convenience wrapper."""
+    import auth as auth_helper
+    new_role = body.get("role")
+    if not new_role:
+        raise HTTPException(status_code=400, detail="Missing 'role' in body")
+    auth_helper.update_user_info(uid, {"role": new_role})
+    return {"status": "success"}
+
+
+@app.patch("/admin/users/{uid}/deactivate")
+async def deactivate_admin_user(
+    uid: str,
+    body: Optional[dict] = None,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Deactivate a user account without deleting it (Admin only)."""
+    import auth as auth_helper
+    # Display-only convention: status field is used by the frontend to mute rows.
+    reason = (body or {}).get("reason")
+    updates = {"status": "Inactive"}
+    if reason:
+        updates["deactivation_reason"] = reason
+    auth_helper.update_user_info(uid, updates)
+    return {"status": "success"}
+
+
+@app.get("/admin/audit")
+async def get_admin_audit_alias(
+    page: int = 1,
+    limit: int = 50,
+    action_type: Optional[str] = None,
+    uid: Optional[str] = None,
+    days: Optional[int] = None,
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Alias for /admin/audit-log to match spec."""
+    return audit_store.get_all_audit_paginated(
+        page=page,
+        limit=limit,
+        action_type=action_type,
+        uid=uid,
+        days=days
+    )
+
+
+@app.get("/admin/audit/export")
+async def export_admin_audit_alias(
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Alias for /admin/audit-log/export to match spec."""
+    return await export_admin_audit_log(_auth=_auth, audit_store=audit_store)
+
+
+# ── 16. Admin Control Panel ───────────────────────────────────────────────────
+
+@app.get("/admin/users")
+async def get_admin_users(
+    _auth: dict = Depends(require_role('admin')),
+):
+    """List all users from Auth and Firestore (Admin only)."""
+    import auth as auth_helper
+    return auth_helper.get_all_users_info()
+
+
+@app.patch("/admin/users/{uid}")
+async def patch_admin_user(
+    uid: str,
+    updates: dict,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Update user role, status (deactivate), or flags (Admin only)."""
+    import auth as auth_helper
+    auth_helper.update_user_info(uid, updates)
+    return {"status": "success"}
+
+
+@app.get("/admin/feature-visibility")
+async def get_admin_feature_visibility(
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Fetch feature visibility matrix (Admin only)."""
+    import auth as auth_helper
+    return auth_helper.get_feature_visibility()
+
+
+@app.patch("/admin/feature-visibility/{feature_id}")
+async def patch_admin_feature_visibility(
+    feature_id: str,
+    updates: dict,
+    _auth: dict = Depends(require_role('admin')),
+):
+    """Update feature visibility matrix (Admin only)."""
+    import auth as auth_helper
+    auth_helper.update_feature_visibility(feature_id, updates)
+    return {"status": "success"}
+
+
+@app.get("/admin/audit-log")
+async def get_admin_audit_log(
+    page: int = 1,
+    limit: int = 50,
+    action_type: Optional[str] = None,
+    uid: Optional[str] = None,
+    days: Optional[int] = None,
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Full system audit log viewer (Admin only)."""
+    return audit_store.get_all_audit_paginated(
+        page=page,
+        limit=limit,
+        action_type=action_type,
+        uid=uid,
+        days=days
+    )
+
+
+@app.get("/admin/audit-log/export")
+async def export_admin_audit_log(
+    _auth: dict = Depends(require_role('admin')),
+    audit_store: AuditStore = Depends(get_audit_store)
+):
+    """Export full audit log to CSV for external auditing."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+    import json
+
+    rows = audit_store.get_all_audit_for_export()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Timestamp (UTC)", "Action", "User", "Submission ID", "Details"])
+    
+    for row in rows:
+        meta = row["metadata"]
+        memo = ""
+        if meta:
+            try:
+                m_obj = json.loads(meta) if isinstance(meta, str) else meta
+                memo = m_obj.get("memo", str(meta))
+            except:
+                memo = str(meta)
+        
+        writer.writerow([
+            row["timestamp_utc"],
+            row["action_type"],
+            row["performed_by_name"],
+            row["submission_id"] or "System",
+            memo
+        ])
+    
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=redwing_audit_log.csv"}
+    )

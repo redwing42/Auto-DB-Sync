@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
     ArrowLeft, ArrowRight, Send, AlertTriangle, CheckCircle,
     Loader2, Upload, FileCheck, XCircle, Info
 } from 'lucide-react';
 import { api } from '../../api/api';
+import { auth } from '../../firebase';
 import { useToast } from '../shared/Toast';
 import StepperProgress from './StepperProgress';
-import DiffDisplay from './DiffDisplay';
+import DiffDisplay, { DiffSummary } from './DiffDisplay';
+import DraftSaveIndicator from './DraftSaveIndicator';
+import { useDraftAutoSave } from '../../hooks/useDraftAutoSave';
 
 const STEPS = ['Select Route', 'Upload & Match', 'Drive Links', 'Review & Submit'];
 
@@ -55,10 +58,17 @@ function bearing(lat1, lng1, lat2, lng2) {
 
 export default function UpdateRouteStepper() {
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
     const addToast = useToast();
     const fileInputRef = useRef(null);
+    const hydratedRef = useRef(false);
 
     const [step, setStep] = useState(1);
+
+    // Phase 4: Draft support
+    const resubmitIdParam = searchParams.get('resubmit');
+    const { draftId, saving, lastSaved, saveDraft, saveNow, clearDraft, hydrate } =
+        useDraftAutoSave('UPDATE', resubmitIdParam);
 
     // Step 1 & 2
     const [networks, setNetworks] = useState([]);
@@ -86,12 +96,85 @@ export default function UpdateRouteStepper() {
     const [duplicateCheck, setDuplicateCheck] = useState(null);
     const [stepErrors, setStepErrors] = useState([]);
 
+    const draftIdParam = searchParams.get('draft');
+
+    // Hydrate from draft or resubmission
+    useEffect(() => {
+        if (hydratedRef.current) return;
+        (async () => {
+            try {
+                const token = await auth.currentUser?.getIdToken();
+                if (!token) return;
+
+                if (draftIdParam) {
+                    const draft = await api.getDraft(draftIdParam, token);
+                    const payload = JSON.parse(draft.payload_json);
+                    if (payload.editedData) setEditedData(payload.editedData);
+                    if (payload.originalData) setOriginalData(payload.originalData);
+                    if (payload.selectedRouteId) {
+                        // We'll fetch route details later if needed, but for now just set state
+                    }
+                    hydrate(draftIdParam);
+                    addToast('Draft restored');
+                } else if (resubmitIdParam) {
+                    const resub = await api.getResubmitData(resubmitIdParam, token);
+                    const payload = resub.payload;
+                    
+                    // Set edited data from the rejected submission
+                    setEditedData(prev => ({ ...prev, ...payload }));
+                    
+                    // We need to fetch the current route state to set as originalData
+                    if (payload.update_for_route_id) {
+                        try {
+                            const route = await api.getRoute(payload.update_for_route_id);
+                            setSelectedRoute(route);
+                            // Set original data from the DB route
+                            const original = {
+                                network_name: '', // Will be filled once networks load or from route
+                                source_location_name: route.start_location_name,
+                                source_takeoff_zone_name: route.start_lz_name,
+                                source_latitude: route.start_latitude,
+                                source_longitude: route.start_longitude,
+                                destination_location_name: route.end_location_name,
+                                destination_landing_zone_name: route.end_lz_name,
+                                destination_latitude: route.end_latitude,
+                                destination_longitude: route.end_longitude,
+                                takeoff_direction: route.takeoff_direction,
+                                approach_direction: route.approach_direction,
+                                mission_filename: route.mission_filename || '',
+                                mission_drive_link: '',
+                                elevation_image_drive_link: '',
+                                route_image_drive_link: '',
+                            };
+                            setOriginalData(original);
+                            setSelectedNetworkId(route.network_id);
+                        } catch (e) {
+                            console.warn('Failed to fetch original route for resubmit:', e);
+                        }
+                    }
+                    addToast(`Resubmitting — previously rejected: ${resub.rejection_reason || 'No reason'}`);
+                }
+            } catch (err) {
+                console.warn('Hydration failed:', err);
+            } finally {
+                hydratedRef.current = true;
+            }
+        })();
+    }, [draftIdParam, resubmitIdParam]);
+
     useEffect(() => {
         api.getNetworks()
             .then(setNetworks)
             .catch(e => addToast(`Failed to load networks: ${e.message}`))
             .finally(() => setLoadingNetworks(false));
     }, []);
+
+    // Phase 4: Auto-save on editedData changes
+    useEffect(() => {
+        if (!hydratedRef.current && draftIdParam) return;
+        if (Object.keys(editedData).length === 0) return;
+        saveDraft({ editedData, originalData, selectedRouteId: selectedRoute?.id });
+    }, [editedData]);
 
     const loadRoutes = async (networkId) => {
         setLoadingRoutes(true);
@@ -209,6 +292,17 @@ export default function UpdateRouteStepper() {
         k => String(originalData[k]) !== String(editedData[k])
     );
 
+    // Phase 4: Build changed_fields dictionary for the payload
+    const buildChangedFieldsDict = () => {
+        const dict = {};
+        for (const key of Object.keys(originalData)) {
+            if (String(originalData[key]) !== String(editedData[key])) {
+                dict[key] = { old: originalData[key], new: editedData[key] };
+            }
+        }
+        return dict;
+    };
+
     const buildPayload = () => ({
         ...editedData,
         source_latitude: Number(editedData.source_latitude),
@@ -219,6 +313,8 @@ export default function UpdateRouteStepper() {
         approach_direction: Number(editedData.approach_direction),
         is_update: true,
         update_for_route_id: selectedRoute?.id,
+        // Phase 4: Include changed_fields dict
+        changed_fields: buildChangedFieldsDict(),
     });
 
     const validateCurrentStep = () => {
@@ -244,9 +340,17 @@ export default function UpdateRouteStepper() {
     };
 
     const handleNext = () => {
-        if (validateCurrentStep()) { setStepErrors([]); setStep(s => s + 1); }
+        if (validateCurrentStep()) {
+            setStepErrors([]);
+            saveNow({ editedData, originalData, selectedRouteId: selectedRoute?.id });
+            setStep(s => s + 1);
+        }
     };
-    const handleBack = () => { setStepErrors([]); setStep(s => s - 1); };
+    const handleBack = () => {
+        setStepErrors([]);
+        saveNow({ editedData, originalData, selectedRouteId: selectedRoute?.id });
+        setStep(s => s - 1);
+    };
 
     useEffect(() => {
         if (step === 4) {
@@ -273,7 +377,8 @@ export default function UpdateRouteStepper() {
         setSubmitting(true);
         try {
             const result = await api.createSubmission(buildPayload());
-            addToast(`Update submitted: #${result.submission_id.slice(0, 8)}`);
+            await clearDraft();
+            addToast(`Update submitted: ${result.human_id || `#${result.submission_id.slice(0, 8)}`}`);
             navigate('/');
         } catch (e) {
             addToast(`Submit failed: ${e.message}`);
@@ -296,7 +401,10 @@ export default function UpdateRouteStepper() {
                 <ArrowLeft size={14} /> Back
             </button>
 
-            <div className="page-header"><h1>Update Existing Route</h1></div>
+            <div className="page-header" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <h1>Update Existing Route</h1>
+                <DraftSaveIndicator saving={saving} lastSaved={lastSaved} />
+            </div>
             <StepperProgress steps={STEPS} currentStep={step} />
 
             {stepErrors.length > 0 && (
@@ -428,6 +536,7 @@ export default function UpdateRouteStepper() {
                                             <DiffDisplay
                                                 key={key}
                                                 label={FIELD_LABELS[key]}
+                                                field={key}
                                                 oldValue={originalData[key]}
                                                 newValue={editedData[key]}
                                             />
@@ -520,20 +629,7 @@ export default function UpdateRouteStepper() {
                             </div>
                             <div className="summary-section summary-section--full">
                                 <div className="summary-section-title">Changes Overview</div>
-                                {Object.keys(FIELD_LABELS).map(key => {
-                                    const isChanged = String(originalData[key]) !== String(editedData[key]);
-                                    if (!isChanged) return null;
-                                    return (
-                                        <div key={key} className="summary-row">
-                                            <span>{FIELD_LABELS[key]}</span>
-                                            <div className="diff-inline">
-                                                <span className="diff-old">{originalData[key]}</span>
-                                                <ArrowRight size={12} />
-                                                <span className="diff-new">{editedData[key]}</span>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
+                                <DiffSummary changedFields={buildChangedFieldsDict()} />
                             </div>
                             <div className="summary-section summary-section--full">
                                 <div className="summary-section-title">Drive Links</div>
