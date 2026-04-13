@@ -232,7 +232,7 @@ export default function InboxPage() {
                                 <td>
                                     {sub.status === 'pending' && <span className="unread-dot" />}
                                 </td>
-                                <td className="table-id">{sub.human_id || `#${sub.id.slice(0, 6)}`}</td>
+                                <td className="table-id">{sub.human_id || `RW-${sub.serial_id ?? 'UNKNOWN'}`}</td>
                                 <td className="route-cell">
                                     <span className="table-route">
                                         {sub.payload.source_location_name}

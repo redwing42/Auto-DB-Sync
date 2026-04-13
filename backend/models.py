@@ -160,6 +160,18 @@ class ReviewStateUpdateRequest(BaseModel):
     id_resolution_reviewed: Optional[bool] = None
 
 
+class SubmissionPayloadUpdateRequest(BaseModel):
+    network_name: Optional[str] = None
+    source_location_name: Optional[str] = None
+    source_takeoff_zone_name: Optional[str] = None
+    source_latitude: Optional[float] = None
+    source_longitude: Optional[float] = None
+    destination_location_name: Optional[str] = None
+    destination_landing_zone_name: Optional[str] = None
+    destination_latitude: Optional[float] = None
+    destination_longitude: Optional[float] = None
+
+
 # ── Approval Request (with confirmation gate) ───────────────────────────────
 
 class ConfirmedNewEntities(BaseModel):

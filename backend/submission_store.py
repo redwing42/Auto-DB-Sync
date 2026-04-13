@@ -293,6 +293,27 @@ class SubmissionStore:
         conn.close()
         return affected > 0
 
+    def update_submission_payload(
+        self,
+        submission_id: str,
+        payload: SubmissionPayload,
+        user_uid: Optional[str] = None,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE submissions
+            SET payload = ?, id_resolution_reviewed = 0, updated_at = ?, updated_by_uid = ?
+            WHERE id = ?
+            """,
+            (payload.model_dump_json(), now, user_uid, submission_id),
+        )
+        conn.commit()
+        affected = conn.total_changes
+        conn.close()
+        return affected > 0
+
     # ── Workflow State ───────────────────────────────────────────────────
 
     def update_workflow_state(
