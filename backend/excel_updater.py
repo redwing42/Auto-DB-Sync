@@ -418,6 +418,24 @@ class ExcelUpdater:
             new_id,
         )
 
+    def deactivate_flight_route(self, route_id: int) -> None:
+        """Deactivate an existing flight route by setting Status to 0."""
+        ws = self._ws(SHEET_FLIGHT_ROUTES)
+        headers = self._headers(SHEET_FLIGHT_ROUTES)
+        id_col = headers.get("id", 1)
+        status_col = headers.get("status")
+
+        if not status_col:
+            logger.warning(f"Could not find 'status' column in {SHEET_FLIGHT_ROUTES}")
+            return
+
+        row = _find_row_by_column_value(ws, id_col, route_id)
+        if row is not None:
+            ws.cell(row=row, column=status_col, value=0)
+            logger.info(f"Deactivated flight route (Status=0): id={route_id}")
+        else:
+            logger.warning(f"Flight route {route_id} not found for deactivation.")
+
     # ── Save (with temp-copy pattern) ────────────────────────────────────
 
     def save(self) -> None:
@@ -592,6 +610,10 @@ class ExcelUpdater:
             takeoff_direction=payload.takeoff_direction,
             approach_direction=payload.approach_direction,
         )
+
+        # Step 8.5
+        if getattr(payload, "is_update", False) and getattr(payload, "update_for_route_id", None) is not None:
+            self.deactivate_flight_route(payload.update_for_route_id)
 
         # Step 9
         self.save()

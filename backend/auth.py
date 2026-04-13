@@ -27,17 +27,24 @@ async def get_current_user(authorization: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=401, detail=f'Invalid token: {str(e)}')
     
-    # Fetch role from Firestore
+    # Fetch role and name from Firestore
+    display_name = decoded.get('name')
     try:
         user_doc = fs_client.collection('users').document(decoded['uid']).get()
-        role = user_doc.to_dict().get('role', 'operator') if user_doc.exists else 'operator'
+        if user_doc.exists:
+            data = user_doc.to_dict()
+            role = data.get('role', 'operator')
+            display_name = data.get('displayName', display_name)
+        else:
+            role = 'operator'
     except Exception:
         role = 'operator'
     
     return {
-        'uid':   decoded['uid'],
-        'email': decoded.get('email'),
-        'role':  role
+        'uid':          decoded['uid'],
+        'email':        decoded.get('email'),
+        'display_name': display_name or decoded.get('email'),
+        'role':         role
     }
 
 def require_role(minimum_role: str):

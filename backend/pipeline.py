@@ -5,9 +5,11 @@ Runs Steps 1–11 atomically:
   2–8. Resolve/create entities (via ExcelUpdater)
   9. Save Excel
   10. Regenerate SQLite database
-  11. Git commit & push
+  11. Git commit & push to db-update branch
 
 Uses backup/restore pattern — if any step fails, the original Excel is restored.
+Pipeline lock is acquired from DB at start and released on completion/failure.
+Each step is recorded in the audit log.
 """
 
 from __future__ import annotations
@@ -15,19 +17,24 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from audit_store import AuditStore
 from config import Settings
+from email_service import send_approval, send_pipeline_failure
 from excel_updater import ExcelUpdater
 from models import (
     ApprovalRequest,
+    AuditActionType,
     ConfirmedNewEntities,
     EntityAction,
     PipelineResult,
     ResolvePreviewResponse,
     SubmissionPayload,
     SubmissionStatus,
+    WorkflowState,
 )
 from submission_store import SubmissionStore
 
@@ -68,11 +75,91 @@ def validate_confirmations(
     return None
 
 
+def _generate_branch_shortform(payload: SubmissionPayload, settings: Settings) -> str:
+    """Generate a branch shortform from location codes and LZ names.
+
+    Pattern: {src_location_code}-{src_lz_short}-to-{dst_location_code}-{dst_lz_short}
+    Falls back to sanitized location names if codes aren't available.
+    """
+    import sqlite3 as _sqlite3
+
+    flights_db = settings.instance_dir / "flights.db"
+    src_code = payload.source_location_name
+    dst_code = payload.destination_location_name
+
+    # Try to look up location codes from flights.db
+    if flights_db.exists():
+        try:
+            conn = _sqlite3.connect(str(flights_db))
+            conn.row_factory = _sqlite3.Row
+
+            row = conn.execute(
+                "SELECT code FROM locations WHERE name = ?",
+                (payload.source_location_name,),
+            ).fetchone()
+            if row and row["code"]:
+                src_code = row["code"]
+
+            row = conn.execute(
+                "SELECT code FROM locations WHERE name = ?",
+                (payload.destination_location_name,),
+            ).fetchone()
+            if row and row["code"]:
+                dst_code = row["code"]
+
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Failed to look up location codes: {e}")
+
+    # Sanitize for git branch naming
+    def _sanitize(name: str) -> str:
+        return name.strip().replace(" ", "-").replace("/", "-").lower()[:20]
+
+    shortform = f"{_sanitize(src_code)}-to-{_sanitize(dst_code)}"
+    return shortform
+
+
+def _generate_branch_name(payload: SubmissionPayload, settings: Settings) -> str:
+    """Generate the full git branch name.
+
+    New route: db-update/add-routes-for-{SHORTFORM}
+    Update route: db-update/update-route-{SHORTFORM}
+    If branch exists: append -{YYYYMMDD}
+    """
+    shortform = _generate_branch_shortform(payload, settings)
+
+    if payload.is_update:
+        base = f"db-update/update-route-{shortform}"
+    else:
+        base = f"db-update/add-routes-for-{shortform}"
+
+    # Check if branch already exists
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-a", "--list", f"*{base}*"],
+            cwd=str(settings.repo_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.stdout.strip():
+            # Branch exists — append date suffix
+            date_suffix = datetime.now(timezone.utc).strftime("%Y%m%d")
+            return f"{base}-{date_suffix}"
+    except Exception as e:
+        logger.warning(f"Failed to check existing branches: {e}")
+
+    return base
+
+
 def run_approval_pipeline(
     submission_id: str,
     approval: ApprovalRequest,
     store: SubmissionStore,
     settings: Settings,
+    user_uid: Optional[str] = None,
+    user_name: Optional[str] = None,
+    user_role: Optional[str] = None,
 ) -> PipelineResult:
     """Run the full approval pipeline for a submission.
 
@@ -81,10 +168,15 @@ def run_approval_pipeline(
         approval: The approval request with confirmed entities.
         store: The submission store.
         settings: App settings.
+        user_uid: UID of the approving user.
+        user_name: Display name of the approving user.
+        user_role: Role of the approving user.
 
     Returns:
         PipelineResult with success status and all resolved IDs.
     """
+    audit = AuditStore(settings.AUDIT_DB_PATH)
+
     submission = store.get_submission(submission_id)
     if submission is None:
         return PipelineResult(
@@ -109,6 +201,11 @@ def run_approval_pipeline(
         shutil.copy2(str(excel_path), str(backup_path))
         updater = ExcelUpdater(excel_path)
         updater.open()
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_STEP_COMPLETE,
+            user_uid, user_name, user_role,
+            {"step": 1, "description": "Excel opened & backup created"},
+        )
 
         # ── Pre-check: Validate confirmations against dry run ────────────
         logger.info(f"[Pipeline {submission_id}] Validating confirmations")
@@ -126,7 +223,6 @@ def run_approval_pipeline(
 
         # ── Steps 2–9: Execute pipeline (resolve, create, save) ─────────
         logger.info(f"[Pipeline {submission_id}] Steps 2–9: Executing pipeline")
-        # We need to reopen since dry_run path and write path share state
         updater.close()
         updater = ExcelUpdater(excel_path)
         updater.open()
@@ -136,6 +232,11 @@ def run_approval_pipeline(
         updater = None
 
         logger.info(f"[Pipeline {submission_id}] Excel updated: {ids}")
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_STEP_COMPLETE,
+            user_uid, user_name, user_role,
+            {"step": 9, "description": "Excel entities resolved and saved", "ids": ids},
+        )
 
         # ── Step 10: Regenerate Database ────────────────────────────────
         logger.info(f"[Pipeline {submission_id}] Step 10: Regenerating database")
@@ -165,24 +266,31 @@ def run_approval_pipeline(
             raise PipelineError(10, "flights.db was not created after populate_data.py")
 
         logger.info(f"[Pipeline {submission_id}] Database regenerated successfully")
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_STEP_COMPLETE,
+            user_uid, user_name, user_role,
+            {"step": 10, "description": "Database regenerated"},
+        )
 
-        # ── Step 11: Git Commit & Push (DISABLED) ──────────────────────────
-        logger.info(f"[Pipeline {submission_id}] Step 11: Git commit & push (Skipped per user request)")
-        """
+        # ── Step 11: Git Branch, Commit & Push ──────────────────────────
+        logger.info(f"[Pipeline {submission_id}] Step 11: Git branch & commit")
+
+        branch_name = _generate_branch_name(payload, settings)
+        logger.info(f"[Pipeline {submission_id}] Branch name: {branch_name}")
+
         route_id = ids["flight_route_id"]
         src = payload.source_location_name
         dst = payload.destination_location_name
-        filename = payload.mission_filename
-        takeoff = payload.takeoff_direction
-        approach = payload.approach_direction
 
         commit_msg = (
             f"Database Update: Added route {src} to {dst} (Route ID: {route_id})\n\n"
-            f"- Takeoff direction: {takeoff}°, Approach: {approach}°\n"
-            f"- Mission file: {filename}"
+            f"- Takeoff direction: {payload.takeoff_direction}°, "
+            f"Approach: {payload.approach_direction}°\n"
+            f"- Mission file: {payload.mission_filename}"
         )
 
         git_commands = [
+            ["git", "checkout", "-b", branch_name],
             [
                 "git", "add",
                 settings.EXCEL_FILENAME,
@@ -191,11 +299,18 @@ def run_approval_pipeline(
                 "frontend/public/Elevation and flight routes/",
             ],
             ["git", "commit", "-m", commit_msg],
-            # ["git", "push", "origin", settings.GIT_BRANCH],  # User requested manual push
+            ["git", "push", "origin", branch_name],
+            ["git", "checkout", settings.GIT_BRANCH],  # Return to main
         ]
 
         git_output_parts = []
         for cmd in git_commands:
+            # Skip push if disabled in config
+            if cmd[1] == "push" and not settings.ENABLE_GIT_PUSH:
+                logger.info(f"[Pipeline {submission_id}] Skipping git push (disabled in config)")
+                git_output_parts.append("$ git push... (skipped)")
+                continue
+
             git_result = subprocess.run(
                 cmd,
                 cwd=str(settings.repo_path),
@@ -213,16 +328,37 @@ def run_approval_pipeline(
                 )
 
         git_output = "\n".join(git_output_parts)
-        logger.info(f"[Pipeline {submission_id}] Git commit & push complete")
-        """
-        git_output = "Skipped per user request"
-        logger.info(f"[Pipeline {submission_id}] Git process skipped")
+        logger.info(f"[Pipeline {submission_id}] Git branch created & pushed: {branch_name}")
+
+        # Record branch name in submission and audit
+        store.set_branch_name(submission_id, branch_name)
+        audit.add_record(
+            submission_id, AuditActionType.BRANCH_CREATED,
+            user_uid, user_name, user_role,
+            {"step": 11, "branch_name": branch_name},
+        )
 
         # ── Success ─────────────────────────────────────────────────────
-        # Remove backup
         backup_path.unlink(missing_ok=True)
 
-        store.update_status(submission_id, SubmissionStatus.APPROVED)
+        store.update_workflow_state(
+            submission_id, WorkflowState.PIPELINE_COMPLETE,
+            user_uid=user_uid, performer_name=user_name, branch_name=branch_name,
+        )
+
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_COMPLETE,
+            user_uid, user_name, user_role,
+            {"branch_name": branch_name, "ids": ids},
+        )
+
+        # Send approval email (async — won't block)
+        send_approval(
+            submission_id, payload,
+            approver_name=user_name or "System",
+            approver_role=user_role or "unknown",
+            branch_name=branch_name,
+        )
 
         return PipelineResult(
             success=True,
@@ -242,11 +378,31 @@ def run_approval_pipeline(
         _restore_backup(excel_path, backup_path, e.step)
         if updater:
             updater.close()
+
         store.update_status(
             submission_id,
             SubmissionStatus.FAILED,
             error_detail=f"Step {e.step}: {e.message}",
+            user_uid=user_uid,
         )
+        store.update_workflow_state(
+            submission_id, WorkflowState.PIPELINE_FAILED, user_uid=user_uid,
+        )
+
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_STEP_FAILED,
+            user_uid, user_name, user_role,
+            {"step": e.step, "error": e.message},
+        )
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_FAILED,
+            user_uid, user_name, user_role,
+            {"step": e.step, "error": e.message},
+        )
+
+        # Send pipeline failure email (async)
+        send_pipeline_failure(submission_id, e.step, e.message)
+
         return PipelineResult(
             success=False,
             submission_id=submission_id,
@@ -258,17 +414,37 @@ def run_approval_pipeline(
         _restore_backup(excel_path, backup_path, 0)
         if updater:
             updater.close()
+
         store.update_status(
             submission_id,
             SubmissionStatus.FAILED,
             error_detail=str(e),
+            user_uid=user_uid,
         )
+        store.update_workflow_state(
+            submission_id, WorkflowState.PIPELINE_FAILED, user_uid=user_uid,
+        )
+
+        audit.add_record(
+            submission_id, AuditActionType.PIPELINE_FAILED,
+            user_uid, user_name, user_role,
+            {"step": 0, "error": str(e)},
+        )
+
+        send_pipeline_failure(submission_id, 0, str(e))
+
         return PipelineResult(
             success=False,
             submission_id=submission_id,
             error_step=0,
             error_detail=str(e),
         )
+    finally:
+        # Always release pipeline lock
+        try:
+            store.release_pipeline_lock()
+        except Exception:
+            logger.error("Failed to release pipeline lock")
 
 
 def _restore_backup(excel_path: Path, backup_path: Path, failed_step: int) -> None:

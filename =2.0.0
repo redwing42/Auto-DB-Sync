@@ -1,0 +1,6 @@
+Collecting aiosmtplib
+  Downloading aiosmtplib-4.0.2-py3-none-any.whl (27 kB)
+Installing collected packages: aiosmtplib
+Successfully installed aiosmtplib-4.0.2
+WARNING: You are using pip version 20.2.3; however, version 26.0.1 is available.
+You should consider upgrading via the '/home/jester/Auto-DB-Updater/venv/bin/python -m pip install --upgrade pip' command.

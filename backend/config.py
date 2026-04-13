@@ -20,16 +20,25 @@ class Settings(BaseSettings):
 
     # ── GNOME Online Accounts (for authenticated Google Drive access) ────
     GNOME_GOA_ACCOUNT_PATH: str = "/org/gnome/OnlineAccounts/Accounts/account_1773050616_0"
+    GOA_EMAIL: str = "chirag.mt@redwinglabs.in"  # Actual Google account for SMTP XOAUTH2
 
     # ── Auth & Webhook ───────────────────────────────────────────────────
     WEBHOOK_SECRET: str = "changeme"
 
     # ── Email & SMTP ─────────────────────────────────────────────────────
-    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_HOST: str = "smtp.sendgrid.net"
     SMTP_PORT: int = 587
-    SMTP_USER: str = ""
+    SMTP_USER: str = "apikey"
     SMTP_PASSWORD: str = ""
-    EMAIL_FROM_ADDRESS: str = "no-reply@redwinglabs.in"
+    EMAIL_FROM_ADDRESS: str = "notifications@redwinglabs.in"
+    EMAIL_FROM_NAME: str = "RedWing DB Automation"
+    ADMIN_EMAILS: str = "management@redwinglabs.in"
+
+    # ── Frontend URL (for email deep links) ──────────────────────────────
+    FRONTEND_URL: str = "https://auto-db--updater.web.app"
+
+    # ── Audit DB ─────────────────────────────────────────────────────────
+    AUDIT_DB_PATH: str = "./audit.db"
 
     # ── Server ───────────────────────────────────────────────────────────
     NGROK_DOMAIN: str = ""
@@ -39,6 +48,9 @@ class Settings(BaseSettings):
 
     # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
+
+    # ── Pipeline ─────────────────────────────────────────────────────────
+    ENABLE_GIT_PUSH: bool = True
 
     model_config = ConfigDict(
         env_file=os.path.join(
@@ -68,6 +80,10 @@ class Settings(BaseSettings):
     @property
     def instance_dir(self) -> Path:
         return self.repo_path / "instance"
+
+    @property
+    def admin_emails_list(self) -> list[str]:
+        return [e.strip() for e in self.ADMIN_EMAILS.split(",") if e.strip()]
 
     @property
     def cors_origins_list(self) -> list[str]:
