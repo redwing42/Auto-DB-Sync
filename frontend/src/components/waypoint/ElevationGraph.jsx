@@ -23,11 +23,11 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
     const [seriesVisible, setSeriesVisible] = React.useState(() => {
         try {
             const raw = localStorage.getItem(storageKey);
-            if (!raw) return { abs: true, rel: false, terrain: true };
+            if (!raw) return { abs: true, terrain: true };
             const parsed = JSON.parse(raw);
-            return { abs: parsed?.abs !== false, rel: parsed?.rel === true, terrain: parsed?.terrain !== false };
+            return { abs: parsed?.abs !== false, terrain: parsed?.terrain !== false };
         } catch {
-            return { abs: true, rel: false, terrain: true };
+            return { abs: true, terrain: true };
         }
     });
     React.useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify(seriesVisible)); } catch {} }, [seriesVisible]);
@@ -35,8 +35,6 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
 
     const validWps = React.useMemo(() => (waypoints || []).filter((wp) => !(wp.latitude === 0 && wp.longitude === 0)), [waypoints]);
     const getWpAlt = (wp) => Number(wp?.alt ?? wp?.altitude ?? wp?.param7 ?? 0);
-    const homeAlt = Number(waypoints?.[0]?.alt ?? waypoints?.[0]?.altitude ?? waypoints?.[0]?.param7 ?? 0);
-
     // STEP 1: x-axis from WP0 = 0 only (no negative domain)
     const waypointData = React.useMemo(() => {
         let cum = 0;
@@ -46,14 +44,13 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
                 index: wp.index,
                 seq: i,
                 dist_m: i === 0 ? 0 : cum,
-                // RED = absolute MSL (raw file altitude), ORANGE = relative AGL (minus WP0/home)
-                abs_msl: getWpAlt(wp),
-                rel_agl: getWpAlt(wp) - homeAlt,
+                file_alt: getWpAlt(wp),
+                coord_frame: Number(wp?.coord_frame),
                 latitude: wp.latitude,
                 longitude: wp.longitude,
             };
         });
-    }, [validWps, homeAlt]);
+    }, [validWps]);
 
     // STEP 3: interpolate route every 500m + chunked Open-Elevation
     const routeSamples = React.useMemo(() => {
@@ -139,7 +136,31 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
         return () => { cancelled = true; };
     }, [terrainKey, routeSamples]);
 
-    if (!waypointData.length && !elevationImageUrl) return null;
+    const terrainAtDistance = React.useCallback((dist) => {
+        if (!terrainData.length) return NaN;
+        const nearest = terrainData.reduce(
+            (best, p) => (!best || Math.abs(p.dist_m - dist) < Math.abs(best.dist_m - dist) ? p : best),
+            null,
+        );
+        return nearest?.terrain_amsl;
+    }, [terrainData]);
+
+    const homeTerrainAmsl = terrainAtDistance(0);
+    const normalizedWaypointData = React.useMemo(() => {
+        return waypointData.map((wp) => {
+            const isBoundary = wp.seq === 0 || wp.seq === waypointData.length - 1;
+            const effectiveAlt = isBoundary ? 0 : wp.file_alt;
+            // Red line formula requested by ops:
+            // absolute MSL = home terrain AMSL + waypoint file altitude.
+            const abs_msl = Number.isFinite(homeTerrainAmsl) ? homeTerrainAmsl + effectiveAlt : NaN;
+            return {
+                ...wp,
+                abs_msl,
+            };
+        });
+    }, [waypointData, homeTerrainAmsl]);
+
+    if (!normalizedWaypointData.length && !elevationImageUrl) return null;
 
     const stats = (arr, key) => {
         const vals = arr.map((d) => d[key]).filter(Number.isFinite);
@@ -147,33 +168,33 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
         const min = Math.min(...vals), max = Math.max(...vals), mean = vals.reduce((a, b) => a + b, 0) / vals.length;
         return { min, max, mean };
     };
-    const pathStats = stats(waypointData, 'abs_msl');
+    const pathStats = stats(normalizedWaypointData, 'abs_msl');
     const demStats = stats(terrainData, 'terrain_amsl');
     const fmt = (v) => `${Math.round(v)}m`;
     const allValues = [
-        ...waypointData.map((d) => d.abs_msl),
-        ...terrainData.map((d) => d.terrain_amsl),
+        ...(seriesVisible.abs ? normalizedWaypointData.map((d) => d.abs_msl) : []),
+        ...(seriesVisible.terrain ? terrainData.map((d) => d.terrain_amsl) : []),
     ].filter((v) => !Number.isNaN(v) && Number.isFinite(v));
     const yMin = allValues.length ? Math.floor((Math.min(...allValues) - 100) / 100) * 100 : 0;
     const yMax = allValues.length ? Math.ceil((Math.max(...allValues) + 200) / 100) * 100 : 2000;
     const yTickCount = Math.ceil((yMax - yMin) / 200) + 1;
     const hoveredPoint = Number.isFinite(hoveredIndex)
-        ? waypointData.find((d) => d.index === hoveredIndex) || null
+        ? normalizedWaypointData.find((d) => d.index === hoveredIndex) || null
         : null;
-    const maxDist = waypointData.length ? waypointData[waypointData.length - 1].dist_m : 0;
+    const maxDist = normalizedWaypointData.length ? normalizedWaypointData[normalizedWaypointData.length - 1].dist_m : 0;
     const labelMinDistance = Math.max(1200, maxDist / 12);
     const labelIndices = React.useMemo(() => {
         const shown = new Set();
         let lastShownDist = -Infinity;
-        waypointData.forEach((p, i) => {
-            const force = i === 0 || i === waypointData.length - 1 || hoveredPoint?.index === p.index;
+        normalizedWaypointData.forEach((p, i) => {
+            const force = i === 0 || i === normalizedWaypointData.length - 1 || hoveredPoint?.index === p.index;
             if (force || p.dist_m - lastShownDist >= labelMinDistance) {
                 shown.add(p.index);
                 lastShownDist = p.dist_m;
             }
         });
         return shown;
-    }, [waypointData, labelMinDistance, hoveredPoint]);
+    }, [normalizedWaypointData, labelMinDistance, hoveredPoint]);
 
     const pillStyle = (active) => ({
         borderRadius: 0,
@@ -208,8 +229,8 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
         const dist = Number(label);
         if (!Number.isFinite(dist)) return null;
         const distLabel = dist >= 1000 ? `${(dist / 1000).toFixed(2)} km` : `${dist.toFixed(0)} m`;
-        const wpAtX = waypointData.find((d) => Math.abs(d.dist_m - dist) < 1e-6)
-            || waypointData.reduce((best, d) => (!best || Math.abs(d.dist_m - dist) < Math.abs(best.dist_m - dist) ? d : best), null);
+        const wpAtX = normalizedWaypointData.find((d) => Math.abs(d.dist_m - dist) < 1e-6)
+            || normalizedWaypointData.reduce((best, d) => (!best || Math.abs(d.dist_m - dist) < Math.abs(best.dist_m - dist) ? d : best), null);
         const terrainAtX = terrainData.length
             ? terrainData.reduce((best, d) => (!best || Math.abs(d.dist_m - dist) < Math.abs(best.dist_m - dist) ? d : best), null)
             : null;
@@ -230,8 +251,8 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
                 <div style={{ color: '#888899', marginBottom: 4 }}>
                     Distance: {distLabel}
                 </div>
-                {row(seriesVisible.abs, '#ff3333', '●', 'Absolute MSL', wpAtX?.abs_msl)}
-                {row(seriesVisible.rel, '#ff8800', '●', 'Relative AGL', wpAtX?.rel_agl)}
+                {row(seriesVisible.abs, '#ff3333', '●', 'MSL', wpAtX?.abs_msl)}
+                {row(true, '#ff8800', '●', 'Waypoint File Alt', wpAtX?.file_alt)}
                 {row(seriesVisible.terrain, '#4488ff', '○', 'Terrain AMSL', terrainAtX?.terrain_amsl)}
             </div>
         );
@@ -246,12 +267,11 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
                 </div>
             )}
 
-            {view === 'graph' && waypointData.length > 0 && (
+            {view === 'graph' && normalizedWaypointData.length > 0 && (
                 <div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            <button type="button" style={pillStyle(seriesVisible.abs)} onClick={() => toggle('abs')}>Absolute MSL</button>
-                            <button type="button" style={pillStyle(seriesVisible.rel)} onClick={() => toggle('rel')}>Relative AGL</button>
+                            <button type="button" style={pillStyle(seriesVisible.abs)} onClick={() => toggle('abs')}>MSL</button>
                             <button type="button" style={pillStyle(seriesVisible.terrain)} onClick={() => toggle('terrain')}>Terrain</button>
                         </div>
                         <div style={{ fontSize: 11, color: '#888899', fontFamily: '"JetBrains Mono", monospace' }}>
@@ -263,25 +283,37 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
 
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                         <div style={{ background: 'rgba(0,0,0,0.5)', padding: '6px 8px', fontSize: 11, fontFamily: '"JetBrains Mono", monospace' }}>
-                            {pathStats && <div style={{ color: '#ff3333' }}>■ Planned Path (Min: {fmt(pathStats.min)} Max: {fmt(pathStats.max)} Mean: {fmt(pathStats.mean)})</div>}
+                            {pathStats && <div style={{ color: '#ff3333' }}>■ MSL (Min: {fmt(pathStats.min)} Max: {fmt(pathStats.max)} Mean: {fmt(pathStats.mean)})</div>}
                             {demStats && <div style={{ color: '#4444ff' }}>■ DEM (Min: {fmt(demStats.min)} Max: {fmt(demStats.max)} Mean: {fmt(demStats.mean)})</div>}
                         </div>
                         {hoveredPoint && (
                             <div style={{ background: 'rgba(0,0,0,0.55)', padding: '6px 8px', fontSize: 11, fontFamily: '"JetBrains Mono", monospace', color: '#f8fafc' }}>
-                                {`WP ${hoveredPoint.index} | Alt: ${hoveredPoint.abs_msl.toFixed(1)}m | Dist: ${hoveredPoint.dist_m >= 1000 ? `${(hoveredPoint.dist_m / 1000).toFixed(2)}km` : `${Math.round(hoveredPoint.dist_m)}m`}`}
+                                {`WP ${hoveredPoint.index} | MSL: ${hoveredPoint.abs_msl.toFixed(1)}m | File Alt: ${hoveredPoint.file_alt.toFixed(1)}m | Dist: ${hoveredPoint.dist_m >= 1000 ? `${(hoveredPoint.dist_m / 1000).toFixed(2)}km` : `${Math.round(hoveredPoint.dist_m)}m`}`}
                             </div>
                         )}
                     </div>
 
                     <div style={{ position: 'relative' }}>
                         <ResponsiveContainer width="100%" height={500}>
-                            <ComposedChart data={waypointData} margin={{ top: 20, right: 40, bottom: 24, left: 10 }}>
+                            <ComposedChart data={normalizedWaypointData} margin={{ top: 20, right: 40, bottom: 24, left: 10 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
-                                {waypointData.map((d) => (
-                                    <ReferenceLine key={`wp-v-${d.index}`} x={d.dist_m} stroke="rgba(255,255,255,0.30)" strokeDasharray="3 3" />
+                                {normalizedWaypointData.map((d) => (
+                                    <ReferenceLine
+                                        key={`wp-v-${d.index}`}
+                                        x={d.dist_m}
+                                        yAxisId="msl"
+                                        stroke="rgba(255,255,255,0.30)"
+                                        strokeDasharray="3 3"
+                                    />
                                 ))}
-                                {Number.isFinite(hoveredIndex) && waypointData.some((d) => d.index === hoveredIndex) && (
-                                    <ReferenceLine x={waypointData.find((d) => d.index === hoveredIndex)?.dist_m} stroke="rgba(255,255,255,0.8)" strokeWidth={2} strokeDasharray="3 3" />
+                                {Number.isFinite(hoveredIndex) && normalizedWaypointData.some((d) => d.index === hoveredIndex) && (
+                                    <ReferenceLine
+                                        x={normalizedWaypointData.find((d) => d.index === hoveredIndex)?.dist_m}
+                                        yAxisId="msl"
+                                        stroke="rgba(255,255,255,0.8)"
+                                        strokeWidth={2}
+                                        strokeDasharray="3 3"
+                                    />
                                 )}
                                 <XAxis
                                     dataKey="dist_m"
@@ -292,12 +324,13 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
                                     label={{ value: 'Distance (m)', position: 'insideBottom', dy: 14, fill: '#888899', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}
                                 />
                                 <YAxis
+                                    yAxisId="msl"
                                     tick={{ fontSize: 11, fill: '#888899', fontFamily: 'JetBrains Mono, monospace' }}
                                     unit="m"
                                     width={48}
                                     domain={[yMin, yMax]}
                                     tickCount={yTickCount}
-                                    label={{ value: 'Elevation (m)', angle: -90, position: 'insideLeft', fill: '#888899', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}
+                                    label={{ value: 'MSL (m)', angle: -90, position: 'insideLeft', fill: '#888899', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}
                                 />
                                 <Tooltip
                                     content={<CustomTooltip />}
@@ -307,6 +340,7 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
 
                                 {seriesVisible.terrain && (
                                     <Area
+                                        yAxisId="msl"
                                         data={terrainData}
                                         type="monotone"
                                         dataKey="terrain_amsl"
@@ -320,22 +354,13 @@ export default function ElevationGraph({ waypoints, elevationImageUrl, heightPx 
                                 )}
                                 {seriesVisible.abs && (
                                     <Line
+                                        yAxisId="msl"
                                         type="linear"
                                         dataKey="abs_msl"
                                         stroke="#ff3333"
                                         strokeWidth={3}
                                         dot={<WaypointDot />}
                                         activeDot={{ r: 8, fill: '#ffffff' }}
-                                        isAnimationActive={false}
-                                    />
-                                )}
-                                {seriesVisible.rel && (
-                                    <Line
-                                        type="linear"
-                                        dataKey="rel_agl"
-                                        stroke="#ff8800"
-                                        strokeWidth={2}
-                                        dot={{ r: 4, fill: '#ff8800' }}
                                         isAnimationActive={false}
                                     />
                                 )}
