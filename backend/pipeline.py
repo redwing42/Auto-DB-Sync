@@ -15,8 +15,10 @@ Each step is recorded in the audit log.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -39,6 +41,9 @@ from models import (
 from submission_store import SubmissionStore
 
 logger = logging.getLogger(__name__)
+BRANCH_NAME_PATTERN = re.compile(
+    r"^db-update/(add-routes-for|update-route)-[a-z0-9-]{3,64}(-\d{8})?$"
+)
 
 
 class PipelineError(Exception):
@@ -152,6 +157,50 @@ def _generate_branch_name(payload: SubmissionPayload, settings: Settings) -> str
     return base
 
 
+def _validate_branch_name(branch_name: str) -> bool:
+    return bool(BRANCH_NAME_PATTERN.fullmatch(branch_name))
+
+
+def _run_command_with_retries(
+    cmd: list[str],
+    cwd: Path,
+    timeout: int,
+    retries: int,
+    step: int,
+    submission_id: str,
+    audit: AuditStore,
+    user_uid: Optional[str],
+    user_name: Optional[str],
+    user_role: Optional[str],
+) -> subprocess.CompletedProcess:
+    total_attempts = max(1, retries + 1)
+    last_result: Optional[subprocess.CompletedProcess] = None
+    for attempt in range(1, total_attempts + 1):
+        result = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        last_result = result
+        if result.returncode == 0:
+            return result
+        if attempt < total_attempts:
+            audit.add_record(
+                submission_id, AuditActionType.PIPELINE_STEP_RETRIED,
+                user_uid, user_name, user_role,
+                {
+                    "step": step,
+                    "attempt": attempt + 1,
+                    "command": " ".join(cmd),
+                    "stderr": (result.stderr or "")[:500],
+                },
+            )
+            time.sleep(attempt)
+    return last_result
+
+
 def run_approval_pipeline(
     submission_id: str,
     approval: ApprovalRequest,
@@ -247,12 +296,17 @@ def run_approval_pipeline(
         repo_venv_python = settings.repo_path / "venv" / "bin" / "python"
         python_exe = str(repo_venv_python) if repo_venv_python.exists() else "python3"
 
-        result = subprocess.run(
+        result = _run_command_with_retries(
             [python_exe, settings.POPULATE_SCRIPT],
-            cwd=str(settings.repo_path),
-            capture_output=True,
-            text=True,
+            settings.repo_path,
             timeout=120,
+            retries=settings.PIPELINE_STEP_RETRIES,
+            step=10,
+            submission_id=submission_id,
+            audit=audit,
+            user_uid=user_uid,
+            user_name=user_name,
+            user_role=user_role,
         )
 
         if result.returncode != 0:
@@ -276,6 +330,8 @@ def run_approval_pipeline(
         logger.info(f"[Pipeline {submission_id}] Step 11: Git branch & commit")
 
         branch_name = _generate_branch_name(payload, settings)
+        if not _validate_branch_name(branch_name):
+            raise PipelineError(11, f"Generated branch name is invalid: {branch_name}")
         logger.info(f"[Pipeline {submission_id}] Branch name: {branch_name}")
 
         route_id = ids["flight_route_id"]
@@ -311,12 +367,17 @@ def run_approval_pipeline(
                 git_output_parts.append("$ git push... (skipped)")
                 continue
 
-            git_result = subprocess.run(
+            git_result = _run_command_with_retries(
                 cmd,
-                cwd=str(settings.repo_path),
-                capture_output=True,
-                text=True,
+                settings.repo_path,
                 timeout=60,
+                retries=settings.PIPELINE_STEP_RETRIES,
+                step=11,
+                submission_id=submission_id,
+                audit=audit,
+                user_uid=user_uid,
+                user_name=user_name,
+                user_role=user_role,
             )
             git_output_parts.append(
                 f"$ {' '.join(cmd[:3])}...\n{git_result.stdout}\n{git_result.stderr}"

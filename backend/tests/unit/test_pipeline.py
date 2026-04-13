@@ -18,7 +18,12 @@ from models import (
     SubmissionPayload,
     SubmissionStatus,
 )
-from pipeline import run_approval_pipeline, validate_confirmations
+from pipeline import (
+    _run_command_with_retries,
+    _validate_branch_name,
+    run_approval_pipeline,
+    validate_confirmations,
+)
 from submission_store import SubmissionStore
 
 
@@ -198,3 +203,33 @@ class TestRunApprovalPipeline:
 
         assert not result.success
         assert "confirmation required" in result.error_detail.lower() or "User confirmation" in result.error_detail
+
+
+class TestPipelineHardening:
+    def test_validate_branch_name(self):
+        assert _validate_branch_name("db-update/add-routes-for-hq-to-node")
+        assert _validate_branch_name("db-update/update-route-hq-to-node-20260413")
+        assert not _validate_branch_name("feature/random-branch")
+
+    @patch("pipeline.subprocess.run")
+    def test_run_command_with_retries_records_retry(self, mock_run, tmp_path):
+        fail = MagicMock(returncode=1, stdout="", stderr="fail")
+        ok = MagicMock(returncode=0, stdout="ok", stderr="")
+        mock_run.side_effect = [fail, ok]
+        audit = MagicMock()
+
+        result = _run_command_with_retries(
+            ["echo", "x"],
+            tmp_path,
+            timeout=5,
+            retries=1,
+            step=10,
+            submission_id="sub-1",
+            audit=audit,
+            user_uid="u1",
+            user_name="User",
+            user_role="operator",
+        )
+        assert result.returncode == 0
+        assert mock_run.call_count == 2
+        audit.add_record.assert_called_once()

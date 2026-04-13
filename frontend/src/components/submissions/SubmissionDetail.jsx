@@ -216,7 +216,7 @@ export function SubmissionDetailContent({ submissionId, onBack, embedded = false
                     )}
                     <div>
                         <div className="submission-detail__title-row">
-                            <h1 className="submission-detail__title">RW-{sub.serial_id || sub.id.substring(0, 8)}</h1>
+                            <h1 className="submission-detail__title">{sub.human_id || `RW-${sub.serial_id ?? 'UNKNOWN'}`}</h1>
                             <StatusBadge status={sub.status} />
                             <WorkflowBadge state={sub.workflow_state} />
                         </div>
@@ -379,6 +379,7 @@ export function SubmissionDetailContent({ submissionId, onBack, embedded = false
                             sub={sub}
                             preview={preview}
                             onReviewed={() => loadSubmission(true)}
+                            onSubmissionUpdated={() => loadSubmission(true)}
                         />
                     )}
                     {activeTab === 4 && <ActivityLogTab submissionId={submissionId} />}

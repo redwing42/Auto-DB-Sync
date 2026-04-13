@@ -48,6 +48,8 @@ class Settings(BaseSettings):
 
     # ── Pipeline ─────────────────────────────────────────────────────────
     ENABLE_GIT_PUSH: bool = True
+    PIPELINE_STEP_RETRIES: int = 1
+    PIPELINE_RETRY_BACKOFF_SEC: float = 1.0
 
     model_config = ConfigDict(
         env_file=os.path.join(

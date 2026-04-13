@@ -110,6 +110,11 @@ export const api = {
             method: 'PATCH',
             body: JSON.stringify({ waypoint_verified, id_resolution_reviewed }),
         }),
+    updateSubmissionPayload: (id, patch) =>
+        authFetch(`/submissions/${id}/payload`, {
+            method: 'PATCH',
+            body: JSON.stringify(patch),
+        }),
 
     // ── Pipeline Status ─────────────────────────────────────────────────
     getPipelineStatus: (id) =>

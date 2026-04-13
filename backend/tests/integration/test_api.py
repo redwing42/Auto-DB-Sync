@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -180,3 +181,110 @@ class TestCesiumToken:
         response = test_client.get("/config/cesium-token")
         assert response.status_code == 200
         assert "token" in response.json()
+
+
+class TestNetworkMap:
+    """Test GET /network-map across schema variants."""
+
+    def test_network_map_with_location_type_id_schema(self, test_client, test_settings):
+        flights_db = Path(test_settings.REDWING_REPO_PATH) / "instance" / "flights.db"
+        conn = sqlite3.connect(flights_db)
+        conn.execute("CREATE TABLE networks (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE locations (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                code TEXT,
+                location_type_id INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE landing_zones (
+                id INTEGER PRIMARY KEY,
+                location_id INTEGER,
+                name TEXT,
+                latitude REAL,
+                longitude REAL
+            )
+            """
+        )
+        conn.execute("CREATE TABLE waypoint_files (id INTEGER PRIMARY KEY, filename TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE flight_routes (
+                id INTEGER PRIMARY KEY,
+                network_id INTEGER,
+                start_lz_id INTEGER,
+                end_lz_id INTEGER,
+                start_location_id INTEGER,
+                end_location_id INTEGER,
+                waypoint_file_id INTEGER,
+                status INTEGER,
+                takeoff_direction INTEGER,
+                approach_direction INTEGER
+            )
+            """
+        )
+        conn.execute("INSERT INTO networks (id, name) VALUES (1, 'Test Network')")
+        conn.execute("INSERT INTO locations (id, name, code, location_type_id) VALUES (1, 'Hub A', 'HUBA', 2)")
+        conn.execute("INSERT INTO locations (id, name, code, location_type_id) VALUES (2, 'Node B', 'NODEB', 1)")
+        conn.execute("INSERT INTO landing_zones (id, location_id, name, latitude, longitude) VALUES (11, 1, 'Hub Pad', 13.1, 77.1)")
+        conn.execute("INSERT INTO landing_zones (id, location_id, name, latitude, longitude) VALUES (22, 2, 'Node Pad', 13.2, 77.2)")
+        conn.execute("INSERT INTO waypoint_files (id, filename) VALUES (101, 'L01_demo.waypoints')")
+        conn.execute(
+            """
+            INSERT INTO flight_routes (
+                id, network_id, start_lz_id, end_lz_id, start_location_id, end_location_id,
+                waypoint_file_id, status, takeoff_direction, approach_direction
+            ) VALUES (501, 1, 11, 22, 1, 2, 101, 1, 90, 270)
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        response = test_client.get("/network-map")
+        assert response.status_code == 200
+        data = response.json()
+        assert "route_groups" in data
+        assert len(data["route_groups"]) >= 1
+        first_group = data["route_groups"][0]
+        assert first_group["hub_location_name"] == "Hub A"
+        assert first_group["node_location_name"] == "Node B"
+
+
+class TestPayloadEdit:
+    """Test PATCH /submissions/{id}/payload."""
+
+    def _create_submission(self, test_client):
+        resp = test_client.post(
+            "/webhook/new-submission",
+            json=SAMPLE_PAYLOAD_DICT,
+            headers={"X-Webhook-Secret": "test-secret"},
+        )
+        return resp.json()["submission_id"]
+
+    def test_patch_payload_updates_lat_lng_and_resets_id_review(self, test_client):
+        sub_id = self._create_submission(test_client)
+        test_client.patch(f"/submissions/{sub_id}/review-state", json={"waypoint_verified": True})
+        test_client.patch(f"/submissions/{sub_id}/review-state", json={"id_resolution_reviewed": True})
+
+        response = test_client.patch(
+            f"/submissions/{sub_id}/payload",
+            json={
+                "source_latitude": 12.3456,
+                "source_longitude": 78.9012,
+                "destination_latitude": 13.4567,
+                "destination_longitude": 79.0123,
+                "source_location_name": "Edited Source",
+                "destination_location_name": "Edited Destination",
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["payload"]["source_latitude"] == 12.3456
+        assert data["payload"]["destination_longitude"] == 79.0123
+        assert data["payload"]["source_location_name"] == "Edited Source"
+        assert data["id_resolution_reviewed"] is False

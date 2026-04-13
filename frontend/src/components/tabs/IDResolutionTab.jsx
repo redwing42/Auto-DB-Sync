@@ -3,9 +3,38 @@ import { api } from '../../api/api';
 import RequiresRole from '../shared/RequiresRole';
 import { AlertTriangle, Info, Check } from 'lucide-react';
 
-export default function IDResolutionTab({ preview, sub, onReviewed }) {
+export default function IDResolutionTab({ preview, sub, onReviewed, onSubmissionUpdated }) {
     const [verifying, setVerifying] = useState(false);
     const [confirmations, setConfirmations] = useState({});
+    const [editing, setEditing] = useState(false);
+    const [savingEdits, setSavingEdits] = useState(false);
+    const [form, setForm] = useState({
+        network_name: '',
+        source_location_name: '',
+        source_takeoff_zone_name: '',
+        source_latitude: '',
+        source_longitude: '',
+        destination_location_name: '',
+        destination_landing_zone_name: '',
+        destination_latitude: '',
+        destination_longitude: '',
+    });
+
+    useEffect(() => {
+        const p = sub?.payload;
+        if (!p) return;
+        setForm({
+            network_name: p.network_name ?? '',
+            source_location_name: p.source_location_name ?? '',
+            source_takeoff_zone_name: p.source_takeoff_zone_name ?? '',
+            source_latitude: String(p.source_latitude ?? ''),
+            source_longitude: String(p.source_longitude ?? ''),
+            destination_location_name: p.destination_location_name ?? '',
+            destination_landing_zone_name: p.destination_landing_zone_name ?? '',
+            destination_latitude: String(p.destination_latitude ?? ''),
+            destination_longitude: String(p.destination_longitude ?? ''),
+        });
+    }, [sub?.id, sub?.updated_at]);
 
     // Entities that require explicit user confirmation if they are "new"
     const confirmableEntities = [
@@ -34,6 +63,29 @@ export default function IDResolutionTab({ preview, sub, onReviewed }) {
             alert(err.message);
         } finally {
             setVerifying(false);
+        }
+    };
+
+    const handleSaveEdits = async () => {
+        setSavingEdits(true);
+        try {
+            await api.updateSubmissionPayload(sub.id, {
+                network_name: form.network_name.trim(),
+                source_location_name: form.source_location_name.trim(),
+                source_takeoff_zone_name: form.source_takeoff_zone_name.trim(),
+                source_latitude: Number(form.source_latitude),
+                source_longitude: Number(form.source_longitude),
+                destination_location_name: form.destination_location_name.trim(),
+                destination_landing_zone_name: form.destination_landing_zone_name.trim(),
+                destination_latitude: Number(form.destination_latitude),
+                destination_longitude: Number(form.destination_longitude),
+            });
+            setEditing(false);
+            onSubmissionUpdated?.();
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            setSavingEdits(false);
         }
     };
 
@@ -96,6 +148,67 @@ export default function IDResolutionTab({ preview, sub, onReviewed }) {
             )}
 
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+                    <strong style={{ fontSize: '13px' }}>ID & Coordinate Resolution</strong>
+                    {!editing ? (
+                        <button type="button" className="btn btn-secondary" onClick={() => setEditing(true)}>
+                            Edit In-Place
+                        </button>
+                    ) : (
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => {
+                                    setEditing(false);
+                                    const p = sub?.payload;
+                                    if (!p) return;
+                                    setForm({
+                                        network_name: p.network_name ?? '',
+                                        source_location_name: p.source_location_name ?? '',
+                                        source_takeoff_zone_name: p.source_takeoff_zone_name ?? '',
+                                        source_latitude: String(p.source_latitude ?? ''),
+                                        source_longitude: String(p.source_longitude ?? ''),
+                                        destination_location_name: p.destination_location_name ?? '',
+                                        destination_landing_zone_name: p.destination_landing_zone_name ?? '',
+                                        destination_latitude: String(p.destination_latitude ?? ''),
+                                        destination_longitude: String(p.destination_longitude ?? ''),
+                                    });
+                                }}
+                                disabled={savingEdits}
+                            >
+                                Cancel
+                            </button>
+                            <button type="button" className="btn btn-primary" onClick={handleSaveEdits} disabled={savingEdits}>
+                                {savingEdits ? 'Saving...' : 'Save Edits'}
+                            </button>
+                        </div>
+                    )}
+                </div>
+                {editing && (
+                    <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
+                        {[
+                            ['network_name', 'Network'],
+                            ['source_location_name', 'Source Location'],
+                            ['source_takeoff_zone_name', 'Source LZ'],
+                            ['source_latitude', 'Source Latitude'],
+                            ['source_longitude', 'Source Longitude'],
+                            ['destination_location_name', 'Destination Location'],
+                            ['destination_landing_zone_name', 'Destination LZ'],
+                            ['destination_latitude', 'Destination Latitude'],
+                            ['destination_longitude', 'Destination Longitude'],
+                        ].map(([key, label]) => (
+                            <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{label}</span>
+                                <input
+                                    value={form[key]}
+                                    onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))}
+                                    className="input"
+                                />
+                            </label>
+                        ))}
+                    </div>
+                )}
                 <table className="preview-table">
                     <thead>
                         <tr>

@@ -39,6 +39,7 @@ from models import (
     RouteInfo,
     StatusUpdateRequest,
     SubmissionPayload,
+    SubmissionPayloadUpdateRequest,
     SubmissionResponse,
     SubmissionStatus,
     SubmissionType,
@@ -831,6 +832,31 @@ async def update_review_state(
     return {"status": "ok"}
 
 
+@app.patch("/submissions/{submission_id}/payload", response_model=SubmissionResponse)
+async def update_submission_payload(
+    submission_id: str,
+    request: SubmissionPayloadUpdateRequest,
+    store: SubmissionStore = Depends(get_store),
+    user: dict = Depends(require_role('operator')),
+):
+    """Inline-edit key payload fields used by ID resolution."""
+    sub = store.get_submission(submission_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if sub.status != SubmissionStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Can only edit payload for pending submissions")
+
+    updated_payload = sub.payload.model_copy(update=request.model_dump(exclude_none=True))
+    affected = store.update_submission_payload(
+        submission_id,
+        updated_payload,
+        user_uid=user['uid'],
+    )
+    if not affected:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return store.get_submission(submission_id)
+
+
 @app.patch("/submissions/{submission_id}/status")
 async def update_submission_status(
     submission_id: str,
@@ -1364,14 +1390,24 @@ async def get_network_map(
     if flights_db.exists():
         conn = sqlite3.connect(flights_db)
         conn.row_factory = sqlite3.Row
+        location_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(locations)").fetchall()
+        }
+        if "location_type" in location_columns:
+            location_type_expr = "l.location_type"
+        elif "location_type_id" in location_columns:
+            # Legacy/newer DB schema stores type by id (2 = HUB, others as NODE).
+            location_type_expr = "CASE WHEN l.location_type_id = 2 THEN 'HUB' ELSE 'NODE' END"
+        else:
+            location_type_expr = "'NODE'"
         
         # Get all locations and map type
-        loc_rows = conn.execute("""
-            SELECT l.id, l.name, l.code, l.location_type,
+        loc_rows = conn.execute(f"""
+            SELECT l.id, l.name, l.code, {location_type_expr} as location_type,
                    AVG(lz.latitude) as latitude, AVG(lz.longitude) as longitude
             FROM locations l
             LEFT JOIN landing_zones lz ON lz.location_id = l.id
-            GROUP BY l.id, l.name, l.code, l.location_type
+            GROUP BY l.id, l.name, l.code, {location_type_expr}
         """).fetchall()
         locations = [dict(l) for l in loc_rows]
         loc_type_map = {l['id']: l['location_type'] for l in locations}
