@@ -42,14 +42,17 @@ const authFetch = async (url, options = {}) => {
         finalUrl += `${separator}t=${Date.now()}`;
     }
 
+    console.log(`API Request: ${options.method || 'GET'} ${finalUrl}`, options.body ? JSON.parse(options.body) : '');
     const response = await fetch(finalUrl, {
         ...options,
         headers
     });
 
+    console.log(`API Response: ${response.status} ${finalUrl}`);
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        throw new Error(errorData.detail || `HTTP ${response.status}`);
+        const errData = await response.json().catch(() => ({}));
+        console.error(`API Error: ${response.status}`, errData);
+        throw new Error(errData.detail || `API error: ${response.status}`);
     }
 
     return response.json();

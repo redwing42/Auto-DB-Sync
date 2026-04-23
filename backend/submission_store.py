@@ -465,6 +465,7 @@ class SubmissionStore:
             download_status=DownloadStatus(row["download_status"]),
             error_detail=row["error_detail"],
             created_at=row["created_at"],
+            updated_at=_safe_get("updated_at"),
             downloaded_files=downloaded_files,
             files_downloaded=bool(row["files_downloaded"]),
             waypoint_verified=bool(row["waypoint_verified"]),

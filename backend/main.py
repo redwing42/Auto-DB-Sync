@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="RedWing DB Automation",
     description="Backend for automating RedWing flight database updates from Google Form submissions.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 
@@ -73,8 +73,8 @@ app = FastAPI(
 _settings_for_cors = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_settings_for_cors.cors_origins_list,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
