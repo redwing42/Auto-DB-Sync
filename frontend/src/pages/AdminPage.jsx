@@ -3,6 +3,7 @@ import { ShieldCheck, Search, AlertTriangle, Download, Loader2 } from 'lucide-re
 import { api } from '../api/api';
 import RequiresRole from '../components/shared/RequiresRole';
 import { ROLES } from '../constants';
+import { useToast } from '../components/shared/Toast';
 
 const TABS = [
     { id: 'users', label: 'User Management' },
@@ -68,6 +69,7 @@ export default function AdminPage() {
 }
 
 function UserManagementTab() {
+    const addToast = useToast();
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
@@ -120,8 +122,10 @@ function UserManagementTab() {
                     u.uid === confirmUser.uid ? { ...u, role: confirmRole } : u
                 )
             );
+            addToast(`Successfully updated role for ${confirmUser.email}`);
         } catch (err) {
             console.error('Failed to update role:', err);
+            addToast(`Failed to update role: ${err.message}`);
         } finally {
             setConfirmUser(null);
             setConfirmRole('');
@@ -326,6 +330,7 @@ function UserManagementTab() {
 }
 
 function FeatureVisibilityTab() {
+    const addToast = useToast();
     const [features, setFeatures] = useState([]);
     const [loading, setLoading] = useState(true);
 
@@ -338,6 +343,7 @@ function FeatureVisibilityTab() {
             })
             .catch((err) => {
                 console.error('Failed to load feature visibility:', err);
+                addToast(`Failed to load visibility settings: ${err.message}`);
             })
             .finally(() => {
                 if (active) setLoading(false);
@@ -355,8 +361,10 @@ function FeatureVisibilityTab() {
                     f.feature_id === featureId ? { ...f, [roleKey]: value } : f
                 )
             );
+            addToast(`Updated visibility for ${featureId}`);
         } catch (err) {
             console.error('Failed to update visibility:', err);
+            addToast(`Update failed: ${err.message}`);
         }
     };
 

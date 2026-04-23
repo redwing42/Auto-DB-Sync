@@ -110,6 +110,7 @@ class SubmissionResponse(BaseModel):
     download_status: DownloadStatus = DownloadStatus.NOT_STARTED
     error_detail: Optional[str] = None
     created_at: str
+    updated_at: Optional[str] = None
     downloaded_files: Optional[Dict[str, str]] = None
     files_downloaded: bool = False
     waypoint_verified: bool = False
